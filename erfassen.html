@@ -72,13 +72,17 @@ h1{font-size:22px;margin:6px 0 2px;color:var(--accd)}
   function shift(ym, d) { var y = +ym.slice(0, 4), m = +ym.slice(5, 7) - 1 + d; y += Math.floor(m / 12); m = ((m % 12) + 12) % 12; return y + '-' + pad(m + 1); }
   function daysIn(ym) { return new Date(+ym.slice(0, 4), +ym.slice(5, 7), 0).getDate(); }
 
+  var MAX_H = 12;
+  var ERR_H = 'Bitte Stunden in Viertelstunden eingeben (z. B. 4, 4.25, 4.5 oder 4.75), höchstens ' + MAX_H + ' Stunden pro Tag.';
+  // Nur Dezimalstunden in Viertelstunden (Komma oder Punkt), 0 bis MAX_H. Leer = 0 (Eintrag löschen).
   function parseHours(s) {
     s = String(s).trim().replace(',', '.');
     if (!s) return 0;
-    var m = s.match(/^(\d{1,2}):(\d{2})$/);
-    var v = m ? (+m[1] + (+m[2]) / 60) : (/^\d+(\.\d+)?$/.test(s) ? Number(s) : NaN);
-    if (!isFinite(v) || v < 0 || v > 24) return NaN;
-    return Math.round(v * 100) / 100;
+    if (!/^\d{1,2}(\.\d{1,2})?$/.test(s)) return NaN;
+    var v = Number(s);
+    if (!isFinite(v) || v < 0 || v > MAX_H) return NaN;
+    if (Math.abs(v * 4 - Math.round(v * 4)) > 1e-9) return NaN;
+    return v;
   }
 
   function call(params) {
@@ -124,8 +128,8 @@ h1{font-size:22px;margin:6px 0 2px;color:var(--accd)}
         function save() {
           var v = parseHours(inp.value);
           var old = d.entries[date];
-          if (isNaN(v)) { inp.classList.add('bad'); st.className = 'st er'; st.textContent = '!'; return; }
-          inp.classList.remove('bad');
+          if (isNaN(v)) { inp.classList.add('bad'); st.className = 'st er'; st.textContent = '!'; showMsg(ERR_H, true); return; }
+          inp.classList.remove('bad'); msgBox.replaceChildren();
           if ((old === undefined && v === 0) || old === v) { inp.value = v ? fmtH(v) : ''; return; }
           st.className = 'st sv'; st.textContent = '…'; S.busy++;
           call({ action: 'set', t: token, date: date, hours: v }).then(function (r) {
@@ -160,7 +164,7 @@ h1{font-size:22px;margin:6px 0 2px;color:var(--accd)}
       msgBox,
       d.editable ? '' : el('div', { class: 'msg' }, ['Dieser Monat ist abgeschlossen. Änderungen bitte Roger melden.']),
       list,
-      el('p', { class: 'hint' }, ['Eingabe z. B. 4.5 oder 4:30 (= 4 Stunden 30 Minuten). Jede Eingabe wird sofort gespeichert; das Häkchen zeigt, dass sie angekommen ist.'])
+      el('p', { class: 'hint' }, ['Eingabe in Stunden, nur Viertelstunden: 0.25, 0.5, 0.75, 1, 1.25 … (Komma oder Punkt), höchstens ' + MAX_H + ' Stunden pro Tag. Beispiel: 4 Std. 30 Min. = 4.5. Jede Eingabe wird sofort gespeichert; das Häkchen zeigt, dass sie angekommen ist.'])
     );
   }
 
