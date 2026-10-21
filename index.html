@@ -565,6 +565,7 @@ a{color:var(--accd)}
   'use strict';
   const C = window.Core; const P = window.Pdf;
   const VAULT_KEY = 'abrechnung_vault_v1';
+  const ABRUF_URL = 'https://script.google.com/macros/s/AKfycbzLURthGVd_o-W2aUW4RnsYRjn0UkTwVO19m7v2Hhtq-QFdGDQF5GkG---faGoFl-iuAg/exec';
   const ITER = 250000;
   const enc = new TextEncoder(); const dec = new TextDecoder();
 
@@ -606,7 +607,7 @@ a{color:var(--accd)}
   const root = document.getElementById('app');
 
   const emptyData = () => ({
-    v: 1, settings: { stundenlohn: 35, ferien: 8.33, ahv: 5.3, freibetrag: 1400 },
+    v: 1, settings: { stundenlohn: 35, ferien: 8.33, ahv: 5.3, freibetrag: 1400, abrufKey: '' },
     employer: { name: '', strasse: '', ort: '', email: '' }, persons: [], months: {}, draft: null,
   });
   async function save() {
@@ -719,6 +720,36 @@ a{color:var(--accd)}
     S.result = null; saveSoon();
   }
 
+  /* ---------- Stunden direkt von der Erfassungsseite holen ---------- */
+  async function fetchHours() {
+    const dr = ensureDraft(); const d = S.data; const key = (d.settings.abrufKey || '').trim();
+    const fail = (msg) => { dr.info = { errors: [msg], headers: null, filename: 'Stundenerfassung' }; S.fetching = false; saveSoon(); render(); };
+    if (!key) { S.tab = 'set'; S.msg = 'Bitte zuerst den Abruf-Schlüssel eintragen.'; render(); return; }
+    S.fetching = true; render();
+    let r;
+    try {
+      const resp = await fetch(ABRUF_URL + '?action=export&m=' + encodeURIComponent(dr.key) + '&k=' + encodeURIComponent(key), { method: 'GET', redirect: 'follow' });
+      r = await resp.json();
+    } catch (e) { return fail('Keine Verbindung zur Stundenerfassung. Bitte Internet prüfen und nochmals versuchen.'); }
+    if (!r || !r.ok) return fail((r && r.error) || 'Unbekannter Fehler beim Abruf.');
+    if (!r.rows) { const ab = r.abschluss || []; d.persons.filter((p) => !p.pauschal).forEach((p) => { dr.days[p.id] = []; dr.csvHc[p.id] = 0; }); dr.skip = {}; dr.excess = {}; dr.info = { errors: ['Für diesen Monat sind in der Stundenerfassung noch keine Stunden eingetragen.'], headers: null, filename: 'Stundenerfassung', abschluss: ab }; S.fetching = false; saveSoon(); render(); return; }
+    applyCsv(r.csv, 'Stundenerfassung ' + dr.key);
+    if (dr.info) dr.info.abschluss = r.abschluss || [];
+    S.fetching = false; S.result = null; saveSoon(); render();
+  }
+  /* Hinweise zum Abschluss: wer hat den Monat abgeschickt, stimmen die Totale? */
+  function abschlussNotes(dr) {
+    const ab = dr.info && dr.info.abschluss; if (!ab) return [];
+    const out = [];
+    S.data.persons.filter((p) => !p.pauschal && !dr.skip[p.id]).forEach((p) => {
+      const a = ab.find((x) => C.norm(x.name) === C.norm(p.kurzname) || C.norm(x.name) === C.norm(p.name));
+      const hc = dayHc(dr, p.id);
+      if (!a || a.status !== 'abgeschickt') out.push(`${p.kurzname}: hat den Monat noch nicht abgeschickt${hc > 0 ? ' (Stunden sind aber eingetragen)' : ''}.`);
+      else if (Math.round(a.total * 100) !== hc) out.push(`${p.kurzname}: Total beim Abschicken ${a.total.toFixed(2)} h, jetzt ${C.fmtHc(hc)} h – nach dem Abschicken geändert?`);
+    });
+    return out;
+  }
+
   /* ---------- Berechnung für die Kontrolle ---------- */
   function evaluate() {
     const d = S.data; const dr = ensureDraft(); const rows = []; const blockers = [];
@@ -787,7 +818,8 @@ a{color:var(--accd)}
     const fileIn = h('input', { type: 'file', accept: '.csv,text/csv,text/plain', class: 'hidden', onchange: async (e) => { const f = e.target.files[0]; if (!f) return; applyCsv(await f.text(), f.name); render(); } });
     wrap.append(h('div', { class: 'card' }, h('h2', {}, 'Abrechnungsmonat'), h('div', { class: 'row' }, mSel, ySel),
       h('p', { class: 'muted small' }, `Abrechnungsdatum: ${C.fmtDate(C.nextMonthFirst(y, m))}`),
-      h('button', { class: 'btn', onclick: () => fileIn.click() }, 'Clockify-CSV einlesen'), fileIn,
+      h('button', { class: 'btn', disabled: S.fetching, onclick: fetchHours }, S.fetching ? 'Hole Stunden …' : 'Stunden holen'),
+      h('button', { class: 'btn sec', onclick: () => fileIn.click() }, 'Stattdessen CSV-Datei einlesen'), fileIn,
       d.persons.some((p) => p.id.startsWith('demo')) ? h('button', { class: 'btn sec', onclick: () => { applyCsv(demoCsv(y, m, d.persons), 'Beispiel.csv'); render(); } }, 'Beispiel-CSV laden (erfunden)') : null,
       infoBlock(dr)));
 
@@ -815,7 +847,8 @@ a{color:var(--accd)}
     if (i.errors && i.errors.length) return h('div', { class: 'blockers' }, h('strong', {}, `Datei „${i.filename}“ konnte nicht gelesen werden:`), i.errors.map((e) => h('p', {}, e)), i.headers ? h('p', { class: 'small' }, 'Gefundene Spalten: ' + i.headers.join(' | ')) : null);
     const out = [h('p', { class: 'ok small' }, `„${i.filename}“ eingelesen: ${i.rows} Zeilen.`)];
     if (i.outside) out.push(h('p', { class: 'warn small' }, `${i.outside} Einträge liegen in anderen Monaten und wurden ignoriert.`));
-    (i.unmatched || []).forEach((u) => out.push(h('p', { class: 'warn small' }, `Unbekannter Benutzer „${u.user}“ (${u.count} Einträge, ${C.fmtHc(u.hc)} h) – keiner Person zugeordnet. In den Einstellungen bei der Person den Clockify-Namen eintragen.`)));
+    (i.unmatched || []).forEach((u) => out.push(h('p', { class: 'warn small' }, `Unbekannter Benutzer „${u.user}“ (${u.count} Einträge, ${C.fmtHc(u.hc)} h) – keiner Person zugeordnet. Der Kurzname in den Einstellungen muss genau so geschrieben sein wie der Name im Blatt «Personen».`)));
+    abschlussNotes(dr).forEach((w) => out.push(h('p', { class: 'warn small' }, w)));
     (i.warnings || []).forEach((w) => out.push(h('p', { class: 'warn small' }, w)));
     return h('div', {}, out);
   }
@@ -908,12 +941,16 @@ a{color:var(--accd)}
   }
   function viewSettings() {
     const d = S.data; const out = h('div', {});
+    if (S.msg) { out.append(h('div', { class: 'blockers' }, h('p', {}, S.msg))); S.msg = null; }
     out.append(h('div', { class: 'card' }, h('h2', {}, 'Arbeitgeber (Briefkopf)'),
       field('Name', d.employer.name, (v) => { d.employer.name = v; }), field('Strasse', d.employer.strasse, (v) => { d.employer.strasse = v; }),
       field('PLZ Ort', d.employer.ort, (v) => { d.employer.ort = v; }), field('E-Mail (für CC)', d.employer.email, (v) => { d.employer.email = v; })));
     const num = (k, label) => field(label, d.settings[k], (v) => { const n = Number(String(v).replace(',', '.')); if (isFinite(n) && n >= 0) d.settings[k] = n; }, { inputmode: 'decimal' });
     out.append(h('div', { class: 'card' }, h('h2', {}, 'Sätze'), num('stundenlohn', 'Stundenlohn (CHF)'), num('ferien', 'Ferienentschädigung (%)'), num('ahv', 'AHV/IV/EO (%)'), num('freibetrag', 'Freibetrag pro Monat ohne AHV-Abzug (CHF)'),
       h('p', { class: 'muted small' }, 'ALV, BVG, NBU, Krankentaggeld und Quellensteuer sind fest auf 0.')));
+    out.append(h('div', { class: 'card' }, h('h2', {}, 'Abruf Stundenerfassung'),
+      field('Abruf-Schlüssel', d.settings.abrufKey || '', (v) => { d.settings.abrufKey = v; }, { type: 'password', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false' }),
+      h('p', { class: 'muted small' }, 'Damit holt „Stunden holen“ die Stunden direkt aus der Tabelle. Der Schlüssel bleibt verschlüsselt im Gerät und in der Sicherung.')));
     // Personen
     const pc = h('div', { class: 'card' }, h('h2', {}, 'Assistenzpersonen'));
     d.persons.forEach((p) => {
