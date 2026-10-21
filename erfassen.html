@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Stunden">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="theme-color" content="#4E8A5C">
+<meta name="robots" content="noindex, nofollow">
+<link rel="apple-touch-icon" href="icon-180.png">
+<title>Stunden erfassen</title>
+<style>
+:root{--acc:#4E8A5C;--accd:#3A6B46;--tint:#EAF4EC;--ink:#1B2126;--mut:#5A6570;--hair:#E3E6E8;--bg:#F4F7F5;--err:#B3261E}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:17px;line-height:1.35}
+#app{max-width:520px;margin:0 auto;padding:calc(12px + env(safe-area-inset-top)) 14px calc(40px + env(safe-area-inset-bottom))}
+h1{font-size:22px;margin:6px 0 2px;color:var(--accd)}
+.sub{color:var(--mut);font-size:14px;margin:0 0 10px}
+.nav{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:10px 0}
+.nav button{width:48px;height:48px;border-radius:12px;border:1px solid var(--acc);background:#fff;color:var(--accd);font-size:24px;cursor:pointer}
+.nav button[disabled]{opacity:.35}
+.nav .m{font-size:19px;font-weight:700;text-align:center;flex:1}
+.total{background:var(--acc);color:#fff;border-radius:14px;padding:14px 16px;display:flex;justify-content:space-between;align-items:baseline;margin:8px 0 12px}
+.total b{font-size:30px;font-variant-numeric:tabular-nums}
+.total span{font-size:14px;opacity:.92}
+.msg{background:#FFF4E5;border:1px solid #F0C98B;color:#5C3B00;border-radius:10px;padding:10px 12px;margin:8px 0;font-size:15px}
+.msg.err{background:#FDECEA;border-color:#F3B7B2;color:var(--err)}
+.list{background:#fff;border:1px solid var(--hair);border-radius:14px;overflow:hidden}
+.row{display:grid;grid-template-columns:1fr 104px 26px;align-items:center;gap:8px;padding:6px 12px;border-bottom:1px solid var(--hair);min-height:54px}
+.row:last-child{border-bottom:0}
+.row.we{background:#F7FAF8}
+.row.has{background:var(--tint)}
+.row .d{font-variant-numeric:tabular-nums}
+.row .d small{color:var(--mut);margin-left:6px}
+.row input{width:100%;font:inherit;font-size:18px;text-align:right;padding:8px 10px;border:1px solid #C9CFD3;border-radius:10px;background:#fff;color:var(--ink);min-height:44px;font-variant-numeric:tabular-nums}
+.row input:disabled{background:transparent;border-color:transparent;color:var(--ink);opacity:1;-webkit-text-fill-color:var(--ink)}
+.row input.bad{border-color:var(--err)}
+.st{font-size:18px;text-align:center}
+.st.ok{color:var(--acc)}.st.sv{color:var(--mut)}.st.er{color:var(--err);cursor:pointer}
+.hint{color:var(--mut);font-size:13.5px;margin:12px 2px}
+.center{text-align:center;padding:60px 10px;color:var(--mut)}
+</style>
+</head>
+<body>
+<div id="app"><p class="center">Lade …</p></div>
+<script>
+(function () {
+  'use strict';
+  var API = 'https://script.google.com/macros/s/AKfycbzLURthGVd_o-W2aUW4RnsYRjn0UkTwVO19m7v2Hhtq-QFdGDQF5GkG---faGoFl-iuAg/exec';
+  var WD = ['So', 'Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa'];
+  var MON = ['Januar', 'Februar', 'März', 'April', 'Mai', 'Juni', 'Juli', 'August', 'September', 'Oktober', 'November', 'Dezember'];
+  var token = (new URLSearchParams(location.search).get('t') || '').trim();
+  var app = document.getElementById('app');
+  var S = { data: null, month: null, busy: 0 };
+
+  function el(tag, attrs, kids) {
+    var e = document.createElement(tag);
+    Object.keys(attrs || {}).forEach(function (k) {
+      if (k === 'class') e.className = attrs[k];
+      else if (k.slice(0, 2) === 'on') e.addEventListener(k.slice(2), attrs[k]);
+      else if (attrs[k] !== null && attrs[k] !== undefined && attrs[k] !== false) e.setAttribute(k, attrs[k] === true ? '' : attrs[k]);
+    });
+    (kids || []).forEach(function (c) { e.append(c && c.nodeType ? c : document.createTextNode(c == null ? '' : String(c))); });
+    return e;
+  }
+  function pad(n) { return (n < 10 ? '0' : '') + n; }
+  function fmtH(v) { return (Math.round(v * 100) / 100).toFixed(2); }
+  function monthLabel(ym) { return MON[+ym.slice(5, 7) - 1] + ' ' + ym.slice(0, 4); }
+  function shift(ym, d) { var y = +ym.slice(0, 4), m = +ym.slice(5, 7) - 1 + d; y += Math.floor(m / 12); m = ((m % 12) + 12) % 12; return y + '-' + pad(m + 1); }
+  function daysIn(ym) { return new Date(+ym.slice(0, 4), +ym.slice(5, 7), 0).getDate(); }
+
+  function parseHours(s) {
+    s = String(s).trim().replace(',', '.');
+    if (!s) return 0;
+    var m = s.match(/^(\d{1,2}):(\d{2})$/);
+    var v = m ? (+m[1] + (+m[2]) / 60) : (/^\d+(\.\d+)?$/.test(s) ? Number(s) : NaN);
+    if (!isFinite(v) || v < 0 || v > 24) return NaN;
+    return Math.round(v * 100) / 100;
+  }
+
+  function call(params) {
+    var q = Object.keys(params).map(function (k) { return encodeURIComponent(k) + '=' + encodeURIComponent(params[k]); }).join('&');
+    return fetch(API + (API.indexOf('?') < 0 ? '?' : '&') + q, { method: 'GET', redirect: 'follow' })
+      .then(function (r) { return r.json(); });
+  }
+
+  function load(ym) {
+    S.month = ym;
+    return call({ action: 'list', t: token, m: ym }).then(function (d) {
+      if (!d.ok) throw new Error(d.error || 'Fehler');
+      S.data = d; S.month = d.month; render();
+    }).catch(function (e) {
+      app.replaceChildren(el('h1', {}, ['Stunden erfassen']), el('div', { class: 'msg err' }, [e.message === 'Failed to fetch' ? 'Keine Verbindung. Bitte Internet prüfen und die Seite neu laden.' : e.message]));
+    });
+  }
+
+  function total() {
+    var t = 0, n = 0, e = S.data.entries;
+    Object.keys(e).forEach(function (k) { t += e[k]; n++; });
+    return { t: t, n: n };
+  }
+
+  function render() {
+    var d = S.data, ym = d.month, cur = d.today.slice(0, 7);
+    var tt = total();
+    var totalH = el('b', {}, [fmtH(tt.t)]);
+    var totalN = el('span', {}, [tt.n + (tt.n === 1 ? ' Tag' : ' Tage')]);
+    var list = el('div', { class: 'list' });
+    var n = daysIn(ym);
+    for (var day = 1; day <= n; day++) {
+      (function (day) {
+        var date = ym + '-' + pad(day);
+        var wd = new Date(+ym.slice(0, 4), +ym.slice(5, 7) - 1, day).getDay();
+        var has = d.entries[date] !== undefined;
+        var future = date > d.today;
+        var inp = el('input', { type: 'text', inputmode: 'decimal', autocomplete: 'off', 'aria-label': 'Stunden am ' + pad(day) + '.' + ym.slice(5, 7) + '.', placeholder: d.editable && !future ? '–' : '', disabled: !d.editable || future });
+        if (has) inp.value = fmtH(d.entries[date]);
+        var st = el('span', { class: 'st' }, [has ? '✓' : '']); if (has) st.classList.add('ok');
+        var row = el('div', { class: 'row' + (wd === 0 || wd === 6 ? ' we' : '') + (has ? ' has' : '') }, [
+          el('div', { class: 'd' }, [pad(day) + '.' + ym.slice(5, 7) + '.' + ym.slice(0, 4), el('small', {}, [WD[wd]])]), inp, st]);
+        function save() {
+          var v = parseHours(inp.value);
+          var old = d.entries[date];
+          if (isNaN(v)) { inp.classList.add('bad'); st.className = 'st er'; st.textContent = '!'; return; }
+          inp.classList.remove('bad');
+          if ((old === undefined && v === 0) || old === v) { inp.value = v ? fmtH(v) : ''; return; }
+          st.className = 'st sv'; st.textContent = '…'; S.busy++;
+          call({ action: 'set', t: token, date: date, hours: v }).then(function (r) {
+            S.busy--;
+            if (!r.ok) throw new Error(r.error || 'Fehler');
+            if (v === 0) delete d.entries[date]; else d.entries[date] = v;
+            inp.value = v ? fmtH(v) : '';
+            row.classList.toggle('has', v > 0);
+            st.className = 'st' + (v > 0 ? ' ok' : ''); st.textContent = v > 0 ? '✓' : '';
+            var t2 = total(); totalH.textContent = fmtH(t2.t); totalN.textContent = t2.n + (t2.n === 1 ? ' Tag' : ' Tage');
+          }).catch(function (e) {
+            S.busy = Math.max(0, S.busy - 1);
+            inp.classList.add('bad'); st.className = 'st er'; st.textContent = '!';
+            var m = e.message === 'Failed to fetch' ? 'Nicht gespeichert: keine Verbindung. Bitte nochmals versuchen.' : e.message;
+            showMsg(m, true); st.onclick = save;
+          });
+        }
+        inp.addEventListener('change', save);
+        inp.addEventListener('keydown', function (ev) { if (ev.key === 'Enter') inp.blur(); });
+        list.append(row);
+      })(day);
+    }
+    var msgBox = el('div', { id: 'msgbox' });
+    function showMsg(t, isErr) { msgBox.replaceChildren(el('div', { class: 'msg' + (isErr ? ' err' : '') }, [t])); }
+    var back = el('button', { 'aria-label': 'Vormonat', onclick: function () { load(shift(ym, -1)); }, disabled: ym <= shift(cur, -12) }, ['‹']);
+    var fwd = el('button', { 'aria-label': 'Folgemonat', onclick: function () { load(shift(ym, 1)); }, disabled: ym >= cur }, ['›']);
+    app.replaceChildren(
+      el('h1', {}, [d.name]),
+      el('p', { class: 'sub' }, ['Stunden pro Tag eintragen. Leer lassen, wenn du nicht gearbeitet hast.']),
+      el('div', { class: 'nav' }, [back, el('div', { class: 'm' }, [monthLabel(ym)]), fwd]),
+      el('div', { class: 'total' }, [el('div', {}, [el('span', {}, ['Total Stunden']), el('br'), totalN]), totalH]),
+      msgBox,
+      d.editable ? '' : el('div', { class: 'msg' }, ['Dieser Monat ist abgeschlossen. Änderungen bitte Roger melden.']),
+      list,
+      el('p', { class: 'hint' }, ['Eingabe z. B. 4.5 oder 4:30 (= 4 Stunden 30 Minuten). Jede Eingabe wird sofort gespeichert; das Häkchen zeigt, dass sie angekommen ist.'])
+    );
+  }
+
+  if (!token) { app.replaceChildren(el('h1', {}, ['Stunden erfassen']), el('div', { class: 'msg err' }, ['Dieser Link ist unvollständig. Bitte den Link von Roger öffnen.'])); return; }
+  load(null);
+  window.addEventListener('pageshow', function () { if (S.data && !S.busy) load(S.month); });
+  document.addEventListener('visibilitychange', function () { if (!document.hidden && S.data && !S.busy) load(S.month); });
+})();
+</script>
+</body>
+</html>
