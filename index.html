@@ -70,6 +70,13 @@ nav{position:fixed;left:0;right:0;bottom:0;background:#fff;border-top:1px solid 
 nav button{flex:1;max-width:214px;font:inherit;font-size:14px;font-weight:600;background:none;border:0;padding:14px 4px;color:var(--mut);cursor:pointer;min-height:52px}
 nav button.on{color:var(--accd);box-shadow:inset 0 3px 0 var(--acc)}
 a{color:var(--accd)}
+.gblock{margin-top:16px;padding-top:12px;border-top:1px solid var(--acc)}
+.gblock h3{margin:10px 0 4px}.gblock h3.mt{margin-top:18px}
+.step{display:flex;gap:10px;align-items:flex-start;padding:6px 0;font-size:14px}
+.step .mk{flex:0 0 18px;font-weight:700;color:var(--mut)}
+.step.ok .mk{color:var(--ok)}.step.err .mk{color:var(--err)}
+.mail{background:#fff;border:1px solid var(--hair);border-radius:10px;padding:10px 12px;margin:8px 0}
+.mail pre{white-space:pre-wrap;font:inherit;font-size:14px;margin:8px 0;padding:8px;background:var(--bg);border-radius:8px}
 </style>
 </head>
 <body>
@@ -310,18 +317,99 @@ a{color:var(--accd)}
       let hcSum = 0; const per = {};
       persons.forEach((p) => {
         const r = rec.persons && rec.persons[p.id];
-        if (r) { per[p.id] = r; hcSum += r.hc; tot.perPerson[p.id].bruttoC += r.bruttoC; tot.perPerson[p.id].nettoC += r.nettoC; tot.netto += r.nettoC; if (p.ahvAbzug) tot.bruttoAhv += r.bruttoC; }
+        if (r) { per[p.id] = r; hcSum += r.hc || 0; tot.perPerson[p.id].bruttoC += r.bruttoC; tot.perPerson[p.id].nettoC += r.nettoC; tot.netto += r.nettoC; if (p.ahvAbzug) tot.bruttoAhv += r.bruttoC; }
       });
+      if (rec.hcTotal != null) hcSum = rec.hcTotal; // aus der Google Tabelle übernommener Monat: nur Total Stunden bekannt
       tot.hc += hcSum; tot.count++;
       rows.push({ m, per, hc: hcSum });
     }
     return { rows, tot };
   }
 
+  /* Spalten der Jahresübersicht: Personen mit AHV-Abzug Brutto + Netto, die anderen nur Netto. */
+  function yearColumns(persons) {
+    const cols = [];
+    persons.forEach((p) => { if (p.ahvAbzug) { cols.push({ p, k: 'bruttoC', label: `${p.vorname} Brutto` }); cols.push({ p, k: 'nettoC', label: `${p.vorname} Netto` }); } else cols.push({ p, k: 'nettoC', label: `${p.vorname} Netto` }); });
+    return cols;
+  }
+  /* Werte für die Google Tabelle: Kopfzeile + 12 Monatszeilen (CHF als Zahl, leer = ''). Totals rechnet die Tabelle. */
+  function yearSheet(months, persons, year) {
+    const cols = yearColumns(persons); const yt = yearTotals(months, persons, year);
+    const header = ['Monat'].concat(cols.map((c) => c.label), ['Total Stunden']);
+    const rows = yt.rows.map((r) => [MONATE[r.m - 1]].concat(
+      cols.map((c) => (!r.empty && r.per[c.p.id] ? r.per[c.p.id][c.k] / 100 : '')), [r.empty ? '' : r.hc / 100]));
+    return { header, rows };
+  }
+
+  /* Monat aus einer Zelle der Jahrestabelle: «Januar», «Jan», «März 2026», «2026-03», {m: 3}. Sonst 0. */
+  const MON3 = ['jan', 'feb', 'mar', 'apr', 'mai', 'jun', 'jul', 'aug', 'sep', 'okt', 'nov', 'dez'];
+  function sheetMonth(v) {
+    if (v && typeof v === 'object' && v.m) return Number(v.m);
+    const s = norm(v); let mm;
+    if ((mm = s.match(/^\d{4}-(\d{2})$/))) return Number(mm[1]) >= 1 && Number(mm[1]) <= 12 ? Number(mm[1]) : 0;
+    if (!/^[a-z]{3}/.test(s)) return 0;
+    const i = MON3.indexOf(s.slice(0, 3)); return i + 1;
+  }
+  function sheetNumber(v) {
+    if (v === '' || v == null) return null;
+    if (typeof v === 'number') return isFinite(v) ? v : NaN;
+    const s = String(v).replace(/[’'\s]/g, '').replace(/^CHF/i, '');
+    if (!s) return null;
+    return /^-?\d+(\.\d+)?$/.test(s) ? Number(s) : NaN;
+  }
+  /* Liest die bestehende Google Tabelle «Jahresübersicht» (Werte aus dem Script) und ordnet die Spalten den Personen zu. */
+  function parseYearSheet(values, persons) {
+    const res = { months: {}, cols: [], warnings: [], errors: [] };
+    const hi = (values || []).findIndex((r) => r.some((c) => /brutto|netto/.test(norm(c))));
+    if (hi < 0) { res.errors.push('In der Tabelle wurde keine Kopfzeile mit «Brutto» oder «Netto» gefunden.'); return res; }
+    const head = values[hi]; let hoursCol = -1;
+    head.forEach((c, j) => {
+      if (j === 0) return; const hn = norm(c); if (!hn) return;
+      if (hn.includes('stunden')) { if (hoursCol < 0 || hn.includes('total')) hoursCol = j; return; }
+      const k = hn.includes('brutto') ? 'bruttoC' : (hn.includes('netto') ? 'nettoC' : null);
+      let best = null; let bl = 0;
+      persons.forEach((p) => [p.vorname, p.kurzname, p.name].forEach((x) => { const nx = norm(x); if (nx && hn.includes(nx) && nx.length > bl) { best = p; bl = nx.length; } }));
+      if (!k || !best) { res.warnings.push(`Spalte «${c}» keiner Person zugeordnet – wird nicht übernommen.`); return; }
+      if (res.cols.some((x) => x.p === best && x.k === k)) { res.errors.push(`Für ${best.kurzname} gibt es zwei Spalten «${k === 'bruttoC' ? 'Brutto' : 'Netto'}».`); return; }
+      res.cols.push({ j, p: best, k, header: String(c) });
+    });
+    if (hoursCol < 0) res.errors.push('Spalte «Total Stunden» nicht gefunden.');
+    persons.forEach((p) => {
+      const has = (k) => res.cols.some((x) => x.p === p && x.k === k);
+      if (!has('nettoC')) res.warnings.push(`Keine Spalte «Netto» für ${p.kurzname}.`);
+      if (p.ahvAbzug && has('nettoC') && !has('bruttoC')) res.errors.push(`Keine Spalte «Brutto» für ${p.kurzname} (mit AHV-Abzug).`);
+    });
+    if (res.errors.length) return res;
+    values.slice(hi + 1).forEach((r, i) => {
+      const m = sheetMonth(r[0]); if (!m) return;
+      const rec = { persons: {}, hcTotal: null }; let any = false; const pv = {};
+      res.cols.forEach((c) => {
+        const n = sheetNumber(r[c.j]);
+        if (n === null) return;
+        if (isNaN(n)) { res.errors.push(`${MONATE[m - 1]}: Wert «${r[c.j]}» in Spalte «${c.header}» ist keine Zahl.`); return; }
+        (pv[c.p.id] || (pv[c.p.id] = {}))[c.k] = toCents(n); if (n !== 0) any = true;
+      });
+      const hn = sheetNumber(r[hoursCol]);
+      if (hn !== null && isNaN(hn)) res.errors.push(`${MONATE[m - 1]}: Stunden «${r[hoursCol]}» sind keine Zahl.`);
+      if (!any) return;
+      if (res.months[m]) { res.errors.push(`Der Monat ${MONATE[m - 1]} steht zweimal in der Tabelle (Zeile ${hi + i + 2}).`); return; }
+      persons.forEach((p) => {
+        const v = pv[p.id]; if (!v || (!v.nettoC && !v.bruttoC)) return;
+        if (v.nettoC == null) { res.errors.push(`${MONATE[m - 1]}: Netto fehlt für ${p.kurzname}.`); return; }
+        rec.persons[p.id] = { hc: 0, bruttoC: v.bruttoC != null ? v.bruttoC : v.nettoC, nettoC: v.nettoC };
+      });
+      rec.hcTotal = hn !== null && !isNaN(hn) ? Math.round(hn * 100) : null;
+      if (rec.hcTotal == null) res.warnings.push(`${MONATE[m - 1]}: Total Stunden fehlt.`);
+      res.months[m] = rec;
+    });
+    if (!Object.keys(res.months).length && !res.errors.length) res.errors.push('In der Tabelle sind keine Monate mit Beträgen eingetragen.');
+    return res;
+  }
+
   const api = {
     MONATE, WOCHENTAGE, pad, ymd, parseYmd, weekday, weekdayName, fmtDate, daysInMonth, monthDays, sundaysThursdays,
     monthKey, monthLabel, nextMonthFirst, toCents, round5, fmtMoney, fmtHc, fmtPct, calcPerson, distribute,
-    parseCSV, importClockify, yearTotals, norm,
+    parseCSV, importClockify, yearTotals, norm, yearColumns, yearSheet, sheetMonth, sheetNumber, parseYearSheet,
   };
   root.Core = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
@@ -782,14 +870,15 @@ a{color:var(--accd)}
         const days = r.days.slice().sort((a, b) => a.date.localeCompare(b.date));
         const lohn = await P.lohnabrechnung(window.PDFLib, { employer: d.employer, person: r.p, y, m, calc: r.calc, settings: d.settings });
         const std = await P.stundenuebersicht(window.PDFLib, { employer: d.employer, person: r.p, y, m, days, settings: d.settings });
-        files.push({ name: `${dr.key} Lohnabrechnung ${r.p.kurzname}.pdf`, bytes: lohn, person: r.p.kurzname });
-        files.push({ name: `${dr.key} Stundenübersicht ${r.p.kurzname}.pdf`, bytes: std, person: r.p.kurzname });
+        files.push({ name: `${dr.key} Lohnabrechnung ${r.p.kurzname}.pdf`, bytes: lohn, person: r.p.kurzname, pid: r.p.id });
+        files.push({ name: `${dr.key} Stundenübersicht ${r.p.kurzname}.pdf`, bytes: std, person: r.p.kurzname, pid: r.p.id });
         rec.persons[r.p.id] = { hc: r.hc, bruttoC: r.calc.bruttoC, nettoC: r.calc.nettoC };
       }
       d.months[dr.key] = rec; await save();
       const jb = await P.jahresuebersicht(window.PDFLib, { employer: d.employer, persons: d.persons, year: y, months: d.months });
-      files.push({ name: `Jahresübersicht Löhne Assistenz ${y}.pdf`, bytes: jb, person: 'Jahresübersicht' });
-      S.result = { key: dr.key, files: files.map((f) => ({ name: f.name, person: f.person, blob: new Blob([f.bytes], { type: 'application/pdf' }) })) };
+      files.push({ name: `Jahresübersicht Löhne Assistenz ${y}.pdf`, bytes: jb, person: 'Jahresübersicht', pid: null });
+      S.result = { key: dr.key, year: y, files: files.map((f) => ({ name: f.name, person: f.person, pid: f.pid, blob: new Blob([f.bytes], { type: 'application/pdf' }) })) };
+      S.ablage = null; S.entw = null;
     } catch (e) { alert('Fehler beim Erstellen der Dokumente: ' + e.message); }
     S.busy = false; render();
   }
@@ -912,8 +1001,169 @@ a{color:var(--accd)}
       h('p', { class: 'muted small' }, 'Die Dateien liegen nur in diesem Gerät. „Speichern/Teilen“ öffnet das iPhone-Menü (z. B. „In Dateien sichern“ oder Google Drive).'),
       files.map((f) => h('div', { class: 'file' }, h('span', {}, f.name),
         h('div', { class: 'row' }, h('button', { class: 'btn sec small', onclick: () => openBlob(f) }, 'Ansehen'), h('button', { class: 'btn small', onclick: () => shareFiles([f]) }, 'Speichern/Teilen')))),
-      h('button', { class: 'btn', onclick: () => shareFiles(files) }, 'Alle Dateien speichern/teilen'),
-      h('p', { class: 'muted small' }, 'Ablage in Google Drive und Gmail-Entwürfe folgen in Phase 2.'));
+      h('button', { class: 'btn sec', onclick: () => shareFiles(files) }, 'Alle Dateien speichern/teilen'),
+      googleBlock(r));
+  }
+
+  /* ---------- Google: Ablage im Drive und Gmail-Entwürfe (über das eigene Google-Script) ---------- */
+  const isTest = () => S.data.persons.length > 0 && S.data.persons.every((p) => p.id.startsWith('demo'));
+  async function scriptPost(body) {
+    const key = (S.data.settings.abrufKey || '').trim();
+    if (!key) throw new Error('Bitte zuerst unter „Einstellungen“ den Abruf-Schlüssel eintragen.');
+    let resp;
+    try {
+      // Ohne eigenen Content-Type (text/plain), damit der Browser keine Vorabfrage schickt.
+      resp = await fetch(ABRUF_URL, { method: 'POST', redirect: 'follow', body: JSON.stringify(Object.assign({ k: key, test: isTest() }, body)) });
+    } catch (e) { throw new Error('Keine Verbindung zu Google. Bitte Internet prüfen und nochmals versuchen.'); }
+    let r; try { r = await resp.json(); } catch (e) { throw new Error('Unerwartete Antwort von Google (ist das Script neu bereitgestellt?).'); }
+    if (!r || !r.ok) throw new Error((r && r.error) || 'Unbekannter Fehler.');
+    return r;
+  }
+  const blobB64 = async (blob) => b64(new Uint8Array(await blob.arrayBuffer()));
+
+  async function driveAblegen() {
+    const r = S.result; const d = S.data;
+    const persons = d.persons.filter((p) => r.files.some((f) => f.pid === p.id));
+    const steps = [{ label: `Google Tabelle „Jahresübersicht Löhne Assistenz ${r.year}“` }, { label: 'Jahresübersicht (PDF)' }].concat(persons.map((p) => ({ label: `${p.kurzname}: Lohnabrechnung und Stundenübersicht`, pid: p.id })));
+    S.ablage = { running: true, steps, done: false }; render();
+    const run = async (st, fn) => { st.state = 'run'; render(); try { const res = await fn(); st.state = 'ok'; st.msg = res || ''; } catch (e) { st.state = 'err'; st.msg = e.message; } render(); return st.state === 'ok'; };
+    // 1) Tabelle zuerst: Die Sicherung im Script verhindert, dass ältere Monate verloren gehen.
+    const ys = C.yearSheet(d.months, d.persons, r.year);
+    const okSheet = await run(steps[0], async () => { const x = await scriptPost({ action: 'jahr_schreiben', year: r.year, header: ys.header, rows: ys.rows }); return x.neu ? 'neu angelegt' : 'aktualisiert'; });
+    if (!okSheet) { steps.slice(1).forEach((s) => { s.state = 'skip'; s.msg = 'nicht ausgeführt'; }); S.ablage.running = false; render(); return; }
+    const jf = r.files.find((f) => f.pid === null);
+    await run(steps[1], async () => {
+      // Jahres-PDF jetzt neu erstellen: Seit «Dokumente erstellen» können Monate übernommen worden sein.
+      jf.blob = new Blob([await P.jahresuebersicht(window.PDFLib, { employer: d.employer, persons: d.persons, year: r.year, months: d.months })], { type: 'application/pdf' }); const x = await scriptPost({ action: 'ablegen', ordner: '', files: [{ name: jf.name, b64: await blobB64(jf.blob) }] }); return x.files[0].ersetzt ? 'alte Version im Papierkorb' : 'neu'; });
+    for (const st of steps.slice(2)) {
+      const p = d.persons.find((x) => x.id === st.pid);
+      await run(st, async () => {
+        const fl = []; for (const f of r.files.filter((x) => x.pid === p.id)) fl.push({ name: f.name, b64: await blobB64(f.blob) });
+        const x = await scriptPost({ action: 'ablegen', ordner: p.kurzname, files: fl });
+        const rep = x.files.reduce((a, f) => a + f.ersetzt, 0); return `Ordner „${x.ordner}“` + (rep ? `, ${rep} alte Version(en) im Papierkorb` : '');
+      });
+    }
+    S.ablage.running = false; S.ablage.done = steps.every((s) => s.state === 'ok'); render();
+  }
+
+  function mailDraft(p, key) {
+    const { y, m } = keyYM(key); const d = S.data;
+    return {
+      pid: p.id, to: p.email || '', cc: d.employer.email || '',
+      subject: `Lohnabrechnung ${C.monthLabel(y, m)} / ${p.kurzname}`,
+      body: `${p.anrede === 'Herr' ? 'Lieber' : 'Liebe'} ${p.vorname}\n\nHier ist deine Lohnabrechnung vom ${C.MONATE[m - 1]} mit der Stundenübersicht.\n\nVielen Dank für deine Unterstützung! ❤️\n\nLiebe Grüsse\nRoger`,
+    };
+  }
+  async function entwuerfeErstellen() {
+    const r = S.result; const list = S.entw.list;
+    S.entw.running = true; render();
+    for (const e of list) {
+      e.state = 'run'; render();
+      try {
+        const fl = []; for (const f of r.files.filter((x) => x.pid === e.pid)) fl.push({ name: f.name, b64: await blobB64(f.blob) });
+        const x = await scriptPost({ action: 'entwurf', to: e.to, cc: e.cc, subject: e.subject, body: e.body, files: fl });
+        e.state = 'ok'; e.msg = x.ersetzt ? 'Entwurf ersetzt' : 'Entwurf erstellt';
+      } catch (err) { e.state = 'err'; e.msg = err.message; }
+      render();
+    }
+    S.entw.running = false; S.entw.done = list.every((e) => e.state === 'ok'); render();
+  }
+
+  const MARK = { ok: '✓', err: '✗', run: '…', skip: '–' };
+  const stepLine = (label, st) => h('div', { class: 'step ' + (st.state || '') }, h('span', { class: 'mk' }, MARK[st.state] || '○'), h('span', {}, label, st.msg ? h('div', { class: 'small ' + (st.state === 'err' ? 'err' : 'muted') }, st.msg) : null));
+
+  function googleBlock(r) {
+    const d = S.data; const out = h('div', { class: 'gblock' }, h('h2', {}, 'Google Drive und Gmail'));
+    if (isTest()) out.append(h('p', { class: 'tag' }, 'Testmodus (erfundene Daten): nur Ordner „_TEST Beispieldaten“, nur Adressen @example.com'));
+    // Drive
+    out.append(h('h3', {}, '1. Im Drive ablegen'));
+    if (!S.ablage) out.append(h('p', { class: 'muted small' }, 'Legt die PDFs in den Ordnern der Personen ab, aktualisiert die Google Tabelle „Jahresübersicht“ und ersetzt das PDF der Jahresübersicht. Alte Versionen kommen in den Papierkorb.'));
+    else S.ablage.steps.forEach((s) => out.append(stepLine(s.label, s)));
+    if (S.ablage && S.ablage.done) out.append(h('p', { class: 'ok' }, 'Alles im Drive abgelegt.'));
+    if (S.ablage && !S.ablage.running && S.ablage.steps[0].state === 'err' && /Jahresdaten übernehmen/.test(S.ablage.steps[0].msg || '')) {
+      out.append(h('button', { class: 'btn sec', onclick: () => { S.tab = 'year'; render(); window.scrollTo(0, 0); } }, 'Zu „Jahr“: Jahresdaten übernehmen'));
+    }
+    out.append(h('button', { class: S.ablage && S.ablage.done ? 'btn sec' : 'btn', disabled: !!(S.ablage && S.ablage.running), onclick: driveAblegen },
+      S.ablage && S.ablage.running ? 'Lege ab …' : (S.ablage ? 'Nochmals im Drive ablegen' : 'Im Drive ablegen')));
+    // Gmail
+    out.append(h('h3', { class: 'mt' }, '2. Gmail-Entwürfe'));
+    if (!S.entw) {
+      out.append(h('p', { class: 'muted small' }, 'Pro Person ein Entwurf mit beiden PDFs, CC an den Arbeitgeber. Es wird nichts gesendet: Du prüfst und sendest selbst in Gmail.'),
+        h('button', { class: 'btn sec', onclick: () => { const ps = d.persons.filter((p) => r.files.some((f) => f.pid === p.id)); S.entw = { list: ps.map((p) => mailDraft(p, r.key)) }; render(); } }, 'Entwürfe ansehen'));
+      return out;
+    }
+    const probs = [];
+    S.entw.list.forEach((e) => {
+      const p = d.persons.find((x) => x.id === e.pid);
+      if (!e.to) probs.push(`${p.kurzname}: keine E-Mail-Adresse in den Einstellungen.`);
+      out.append(h('div', { class: 'mail' },
+        h('div', { class: 'small' }, h('b', {}, 'An: '), e.to || '–'), h('div', { class: 'small' }, h('b', {}, 'CC: '), e.cc || '–'),
+        h('div', { class: 'small' }, h('b', {}, 'Betreff: '), (isTest() ? '[TEST] ' : '') + e.subject),
+        h('pre', {}, e.body),
+        h('div', { class: 'small muted' }, 'Anhänge: ' + r.files.filter((f) => f.pid === e.pid).map((f) => f.name).join(', ')),
+        e.state ? stepLine('Gmail', e) : null));
+    });
+    if (!d.employer.email) probs.push('Arbeitgeber: keine E-Mail-Adresse für CC in den Einstellungen.');
+    if (probs.length) out.append(h('div', { class: 'blockers' }, probs.map((x) => h('p', {}, x))));
+    if (S.entw.done) out.append(h('p', { class: 'ok' }, 'Die Entwürfe liegen in Gmail. Bitte dort prüfen und selbst senden.'));
+    out.append(h('button', { class: 'btn', disabled: !!(S.entw.running || probs.length), onclick: entwuerfeErstellen },
+      S.entw.running ? 'Erstelle Entwürfe …' : (S.entw.done ? 'Entwürfe nochmals erstellen (ersetzt sie)' : 'Entwürfe in Gmail erstellen')));
+    return out;
+  }
+
+  /* ---------- Jahresdaten einmalig aus der bestehenden Google Tabelle übernehmen ---------- */
+  async function jahrLesen(year) {
+    S.imp = { year, loading: true }; render();
+    try {
+      const x = await scriptPost({ action: 'jahr_lesen', year });
+      if (!x.found) { S.imp = { year, errors: [`Im Drive gibt es keine Tabelle „${x.name}“. Es gibt nichts zu übernehmen.`] }; render(); return; }
+      const res = C.parseYearSheet(x.values, S.data.persons);
+      const add = []; const same = []; const diff = [];
+      Object.keys(res.months).map(Number).sort((a, b) => a - b).forEach((m) => {
+        const k = C.monthKey(year, m); const have = S.data.months[k]; const rec = res.months[m];
+        if (!have) { add.push(m); return; }
+        const dif = S.data.persons.filter((p) => { const a = have.persons && have.persons[p.id]; const b = rec.persons[p.id]; return (a ? a.nettoC : 0) !== (b ? b.nettoC : 0); });
+        (dif.length ? diff : same).push(m);
+      });
+      S.imp = Object.assign({ year, name: x.name, add, same, diff }, res);
+    } catch (e) { S.imp = { year, errors: [e.message] }; }
+    render();
+  }
+  function jahrUebernehmen() {
+    const imp = S.imp; const now = new Date().toISOString();
+    imp.add.forEach((m) => { const rec = imp.months[m]; S.data.months[C.monthKey(imp.year, m)] = { created: now, imported: true, hcTotal: rec.hcTotal, persons: rec.persons }; });
+    const n = imp.add.length; S.imp = { year: imp.year, doneMsg: `${n} Monat${n === 1 ? '' : 'e'} übernommen. Bitte unter „Einstellungen“ eine neue Sicherung speichern.` };
+    save().catch(() => {}); render();
+  }
+  function importBlock(year) {
+    const imp = S.imp && S.imp.year === year ? S.imp : null; const out = h('div', { class: 'card' }, h('h2', {}, 'Jahresdaten aus Google übernehmen'));
+    if (!imp) {
+      out.append(h('p', { class: 'muted small' }, `Übernimmt einmalig die Monate aus der bestehenden Google Tabelle „Jahresübersicht Löhne Assistenz ${year}“ (z. B. Monate, die noch im Chat abgerechnet wurden). Monate, die schon in der App sind, bleiben unverändert.`),
+        h('button', { class: 'btn sec', onclick: () => jahrLesen(year) }, 'Tabelle lesen und prüfen'));
+      return out;
+    }
+    if (imp.loading) { out.append(h('p', { class: 'muted' }, 'Lese Tabelle …')); return out; }
+    if (imp.doneMsg) { out.append(h('p', { class: 'ok' }, imp.doneMsg)); return out; }
+    if (imp.errors && imp.errors.length) {
+      out.append(h('div', { class: 'blockers' }, h('strong', {}, 'Nicht übernommen:'), imp.errors.map((e) => h('p', {}, e))), (imp.warnings || []).map((w) => h('p', { class: 'warn small' }, w)),
+        h('button', { class: 'btn sec', onclick: () => jahrLesen(year) }, 'Nochmals lesen'));
+      return out;
+    }
+    out.append(h('p', { class: 'small muted' }, 'Zuordnung der Spalten: ' + imp.cols.map((c) => `«${c.header}» → ${c.p.kurzname} ${c.k === 'bruttoC' ? 'Brutto' : 'Netto'}`).join(' · ')));
+    imp.warnings.forEach((w) => out.append(h('p', { class: 'warn small' }, w)));
+    const cols = C.yearColumns(S.data.persons);
+    if (imp.add.length) {
+      out.append(h('p', {}, h('strong', {}, 'Neu in die App: '), imp.add.map((m) => C.MONATE[m - 1]).join(', ')));
+      out.append(h('div', { class: 'scroll' }, h('table', { class: 'tbl' },
+        h('thead', {}, h('tr', {}, h('th', {}, 'Monat'), cols.map((c) => h('th', { class: 'r' }, c.label)), h('th', { class: 'r' }, 'Stunden'))),
+        h('tbody', {}, imp.add.map((m) => { const rec = imp.months[m]; return h('tr', {}, h('td', {}, C.MONATE[m - 1]), cols.map((c) => h('td', { class: 'r' }, rec.persons[c.p.id] ? C.fmtMoney(rec.persons[c.p.id][c.k]) : '')), h('td', { class: 'r' }, rec.hcTotal != null ? C.fmtHc(rec.hcTotal) : '?')); })))));
+    } else out.append(h('p', { class: 'ok' }, 'Alle Monate der Tabelle sind schon in der App.'));
+    if (imp.same.length) out.append(h('p', { class: 'muted small' }, 'Schon in der App (gleich): ' + imp.same.map((m) => C.MONATE[m - 1]).join(', ')));
+    if (imp.diff.length) out.append(h('p', { class: 'warn small' }, 'Schon in der App, aber andere Beträge als in der Tabelle (App-Werte bleiben): ' + imp.diff.map((m) => C.MONATE[m - 1]).join(', ')));
+    out.append(h('div', { class: 'row' },
+      h('button', { class: 'btn', disabled: !imp.add.length, onclick: jahrUebernehmen }, 'Übernehmen'),
+      h('button', { class: 'btn sec', onclick: () => { S.imp = null; render(); } }, 'Abbrechen')));
+    return out;
   }
 
   /* ---------- Ansicht: Jahresübersicht ---------- */
@@ -921,18 +1171,19 @@ a{color:var(--accd)}
     const d = S.data; const yNow = new Date().getFullYear(); const year = S.year || yNow;
     const ySel = h('select', { onchange: (e) => { S.year = Number(e.target.value); render(); } }, [yNow - 2, yNow - 1, yNow, yNow + 1].map((yy) => h('option', { value: yy, selected: yy === year }, yy)));
     const yt = C.yearTotals(d.months, d.persons, year);
-    const cols = []; d.persons.forEach((p) => { if (p.ahvAbzug) { cols.push([p, 'bruttoC', 'Brutto']); cols.push([p, 'nettoC', 'Netto']); } else cols.push([p, 'nettoC', 'Netto']); });
+    const cols = C.yearColumns(d.persons).map((c) => [c.p, c.k, c.k === 'bruttoC' ? 'Brutto' : 'Netto']);
     const tbl = h('table', { class: 'tbl' }, h('thead', {}, h('tr', {}, h('th', {}, 'Monat'), cols.map((c) => h('th', { class: 'r' }, `${c[0].vorname} ${c[2]}`)), h('th', { class: 'r' }, 'Stunden'))),
       h('tbody', {}, yt.rows.map((r) => h('tr', {}, h('td', {}, C.MONATE[r.m - 1]), cols.map((c) => h('td', { class: 'r' }, !r.empty && r.per[c[0].id] ? C.fmtMoney(r.per[c[0].id][c[1]]) : '')), h('td', { class: 'r' }, r.empty ? '' : C.fmtHc(r.hc))))),
       h('tfoot', {}, h('tr', {}, h('td', {}, 'Total'), cols.map((c) => h('td', { class: 'r' }, C.fmtMoney(yt.tot.perPerson[c[0].id][c[1]]))), h('td', { class: 'r' }, C.fmtHc(yt.tot.hc)))));
-    return h('div', { class: 'card' }, h('h2', {}, 'Jahresübersicht'), h('div', { class: 'row' }, ySel), h('div', { class: 'scroll' }, tbl), h('p', { class: 'muted small' }, 'Für alle Spalten die Tabelle seitlich wischen.'),
+    return h('div', {}, h('div', { class: 'card' }, h('h2', {}, 'Jahresübersicht'), h('div', { class: 'row' }, ySel), h('div', { class: 'scroll' }, tbl), h('p', { class: 'muted small' }, 'Für alle Spalten die Tabelle seitlich wischen.'),
       h('p', { class: 'muted small' }, `Abgerechnete Monate: ${yt.tot.count} von 12 · Ausbezahlt netto: CHF ${C.fmtMoney(yt.tot.netto)}`),
       h('button', { class: 'btn', onclick: async () => {
         const bytes = await P.jahresuebersicht(window.PDFLib, { employer: d.employer, persons: d.persons, year, months: d.months });
         S.lastYearFile = { name: `Jahresübersicht Löhne Assistenz ${year}.pdf`, year, blob: new Blob([bytes], { type: 'application/pdf' }) }; render();
       } }, 'PDF erstellen'),
       S.lastYearFile && S.lastYearFile.year === year ? h('div', { class: 'row' }, h('button', { class: 'btn sec', onclick: () => openBlob(S.lastYearFile) }, 'Ansehen'), h('button', { class: 'btn sec', onclick: () => shareFiles([S.lastYearFile]) }, 'Speichern/Teilen')) : null,
-      h('p', { class: 'muted small' }, 'Wenn ein Monat falsch erfasst wurde, in „Abrechnung“ denselben Monat neu erstellen: Der Eintrag wird ersetzt.'));
+      h('p', { class: 'muted small' }, 'Wenn ein Monat falsch erfasst wurde, in „Abrechnung“ denselben Monat neu erstellen: Der Eintrag wird ersetzt.')),
+      importBlock(year));
   }
 
   /* ---------- Ansicht: Einstellungen ---------- */
