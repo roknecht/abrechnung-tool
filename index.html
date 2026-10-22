@@ -526,8 +526,8 @@ a{color:var(--accd)}
     x.text('Nettolohn', L, nb, nsize, 'b'); x.text('CHF', colR, nb, nsize, 'b', null, 'right'); x.text(money(c.nettoC), colA, nb, nsize, 'b', null, 'right');
     x.line(L, t + nh + 1.5, R, 0.75); x.line(L, t + nh + 3.5, R, 0.75);
     t += nh + 3.5 + 18;
-    x.text('Der Betrag wird wie folgt überwiesen:', L, t + 10, fs, 'r');
-    if (p.zahlung) String(p.zahlung).split(/\r?\n/).filter(Boolean).slice(0, 3).forEach((s, i) => x.text(s, L, t + 10 + (i + 1) * lh, fs, 'r'));
+    // Optionale Zahlungsangabe (ohne Überschrift)
+    if (p.zahlung) String(p.zahlung).split(/\r?\n/).filter(Boolean).slice(0, 3).forEach((s, i) => x.text(s, L, t + 10 + i * lh, fs, 'r'));
     x.text('Bitte Lohnabrechnung überprüfen und Unstimmigkeiten melden. Danke.', L, H - 42 - 3, fs, 'r');
     return x.doc.save();
   }
@@ -1250,7 +1250,7 @@ a{color:var(--accd)}
       field('Vorname (Anrede in der E-Mail)', p.vorname, (v) => { p.vorname = v; }), field('Strasse', p.strasse, (v) => { p.strasse = v; }), field('PLZ Ort', p.plzOrt, (v) => { p.plzOrt = v; }),
       field('E-Mail', p.email, (v) => { p.email = v; }, { inputmode: 'email' }), field('AHV-Nr.', p.ahvNr, (v) => { p.ahvNr = v; }),
       field('Name oder E-Mail in Clockify (falls anders)', p.clockifyKey, (v) => { p.clockifyKey = v; }),
-      field('Zahlungsangabe unter „Der Betrag wird wie folgt überwiesen“ (optional)', p.zahlung, (v) => { p.zahlung = v; }),
+      field('Zahlungsangabe unter dem Nettolohn (optional, z. B. IBAN)', p.zahlung, (v) => { p.zahlung = v; }),
       chk('AHV-Abzug', 'ahvAbzug'), chk('Keine Erfassung: Stunden nach Total auf Sonntage/Donnerstage verteilen', 'pauschal'),
       h('div', { class: 'row' }, h('button', { class: 'btn', onclick: () => { S.editing = null; render(); } }, 'Fertig'),
         h('button', { class: 'btn danger', onclick: () => { if (confirm(`${p.kurzname || 'Person'} löschen?`)) { d.persons = d.persons.filter((x) => x.id !== p.id); S.editing = null; saveSoon(); render(); } } }, 'Löschen')));
