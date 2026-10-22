@@ -844,7 +844,8 @@ a{color:var(--accd)}
     d.persons.forEach((p) => {
       const days = dr.days[p.id] || []; const hc = dayHc(dr, p.id); const skip = !!dr.skip[p.id];
       const r = { p, days, hc, skip };
-      if (skip) { r.state = 'skip'; rows.push(r); return; }
+      // Nicht gearbeitet: Lohnabrechnung mit 0.00 (ohne Stundenübersicht), Monat in der Jahresübersicht mit 0.00
+      if (skip) { r.state = 'skip'; r.calc = C.calcPerson(p, 0, d.settings, {}); rows.push(r); return; }
       if (hc <= 0) { r.state = 'missing'; blockers.push(`${p.kurzname}: keine Stunden erfasst – bitte entscheiden.`); rows.push(r); return; }
       if (p.pauschal) {
         const t = dr.pTotal[p.id];
@@ -866,6 +867,12 @@ a{color:var(--accd)}
     try {
       const files = []; const rec = { created: new Date().toISOString(), persons: {} };
       for (const r of ev.rows) {
+        if (r.state === 'skip') {
+          const lohn0 = await P.lohnabrechnung(window.PDFLib, { employer: d.employer, person: r.p, y, m, calc: r.calc, settings: d.settings });
+          files.push({ name: `${dr.key} Lohnabrechnung ${r.p.kurzname}.pdf`, bytes: lohn0, person: r.p.kurzname, pid: r.p.id });
+          rec.persons[r.p.id] = { hc: 0, bruttoC: 0, nettoC: 0, nichtGearbeitet: true };
+          continue;
+        }
         if (r.state !== 'ok') continue;
         const days = r.days.slice().sort((a, b) => a.date.localeCompare(b.date));
         const lohn = await P.lohnabrechnung(window.PDFLib, { employer: d.employer, person: r.p, y, m, calc: r.calc, settings: d.settings });
@@ -917,7 +924,7 @@ a{color:var(--accd)}
 
     // Kontrolle
     const tbl = h('table', { class: 'tbl compact' }, h('thead', {}, h('tr', {}, ['Person', 'Std.', 'Brutto', 'AHV', 'Netto'].map((t, i) => h('th', { class: i ? 'r' : '' }, t)))),
-      h('tbody', {}, ev.rows.map((r) => h('tr', {}, h('td', { class: 'wrap' }, r.p.kurzname, r.state === 'skip' ? h('div', { class: 'muted small' }, 'nicht gearbeitet') : null), h('td', { class: 'r' }, r.state === 'ok' ? C.fmtHc(r.hc) : (r.state === 'skip' ? '–' : '?')),
+      h('tbody', {}, ev.rows.map((r) => h('tr', {}, h('td', { class: 'wrap' }, r.p.kurzname, r.state === 'skip' ? h('div', { class: 'muted small' }, 'nicht gearbeitet') : null), h('td', { class: 'r' }, r.state === 'ok' ? C.fmtHc(r.hc) : (r.state === 'skip' ? '0.00' : '?')),
         h('td', { class: 'r' }, r.calc ? C.fmtMoney(r.calc.bruttoC) : ''), h('td', { class: 'r' }, r.calc ? C.fmtMoney(r.calc.ahvC) : ''), h('td', { class: 'r' }, r.calc ? C.fmtMoney(r.calc.nettoC) : '')))),
       h('tfoot', {}, h('tr', {}, h('td', { class: 'wrap' }, 'Total aller Personen'), h('td', { class: 'r' }, C.fmtHc(ev.totalHc)), h('td', {}), h('td', {}), h('td', { class: 'r' }, C.fmtMoney(ev.rows.reduce((a, r) => a + (r.calc ? r.calc.nettoC : 0), 0))))));
     const csvDiff = ev.rows.filter((r) => !r.p.pauschal && r.state === 'ok' && dr.csvHc[r.p.id] != null && dr.info && !dr.info.errors.length && dr.csvHc[r.p.id] !== r.hc);
@@ -948,7 +955,7 @@ a{color:var(--accd)}
     const card = h('div', { class: 'card' },
       h('div', { class: 'row between' }, h('h3', {}, p.kurzname), h('span', { class: 'tag' }, p.ahvAbzug ? 'mit AHV-Abzug' : 'ohne AHV-Abzug')));
     if (r.state === 'skip') {
-      card.append(h('p', { class: 'muted' }, 'Hat in diesem Monat nicht gearbeitet – keine Abrechnung, Monat bleibt in der Jahresübersicht leer.'),
+      card.append(h('p', { class: 'muted' }, 'Hat in diesem Monat nicht gearbeitet – es wird eine Lohnabrechnung mit 0.00 erstellt (ohne Stundenübersicht).'),
         h('button', { class: 'btn sec', onclick: () => { delete dr.skip[p.id]; saveSoon(); render(); } }, 'Rückgängig'));
       return card;
     }
@@ -1024,7 +1031,7 @@ a{color:var(--accd)}
   async function driveAblegen() {
     const r = S.result; const d = S.data;
     const persons = d.persons.filter((p) => r.files.some((f) => f.pid === p.id));
-    const steps = [{ label: `Google Tabelle „Jahresübersicht Löhne Assistenz ${r.year}“` }, { label: 'Jahresübersicht (PDF)' }].concat(persons.map((p) => ({ label: `${p.kurzname}: Lohnabrechnung und Stundenübersicht`, pid: p.id })));
+    const steps = [{ label: `Google Tabelle „Jahresübersicht Löhne Assistenz ${r.year}“` }, { label: 'Jahresübersicht (PDF)' }].concat(persons.map((p) => ({ label: r.files.some((f) => f.pid === p.id && /Stundenübersicht/.test(f.name)) ? `${p.kurzname}: Lohnabrechnung und Stundenübersicht` : `${p.kurzname}: Lohnabrechnung (nicht gearbeitet)`, pid: p.id })));
     S.ablage = { running: true, steps, done: false }; render();
     const run = async (st, fn) => { st.state = 'run'; render(); try { const res = await fn(); st.state = 'ok'; st.msg = res || ''; } catch (e) { st.state = 'err'; st.msg = e.message; } render(); return st.state === 'ok'; };
     // 1) Tabelle zuerst: Die Sicherung im Script verhindert, dass ältere Monate verloren gehen.
@@ -1046,12 +1053,13 @@ a{color:var(--accd)}
     S.ablage.running = false; S.ablage.done = steps.every((s) => s.state === 'ok'); render();
   }
 
-  function mailDraft(p, key) {
+  function mailDraft(p, key, ohneStunden) {
     const { y, m } = keyYM(key); const d = S.data;
+    const satz = ohneStunden ? `Hier ist deine Lohnabrechnung vom ${C.MONATE[m - 1]}.` : `Hier ist deine Lohnabrechnung vom ${C.MONATE[m - 1]} mit der Stundenübersicht.`;
     return {
       pid: p.id, to: p.email || '', cc: d.employer.email || '',
       subject: `Lohnabrechnung ${C.monthLabel(y, m)} / ${p.kurzname}`,
-      body: `${p.anrede === 'Herr' ? 'Lieber' : 'Liebe'} ${p.vorname}\n\nHier ist deine Lohnabrechnung vom ${C.MONATE[m - 1]} mit der Stundenübersicht.\n\nVielen Dank für deine Unterstützung! ❤️\n\nLiebe Grüsse\nRoger`,
+      body: `${p.anrede === 'Herr' ? 'Lieber' : 'Liebe'} ${p.vorname}\n\n${satz}\n\nVielen Dank für deine Unterstützung! ❤️\n\nLiebe Grüsse\nRoger`,
     };
   }
   async function entwuerfeErstellen() {
@@ -1062,11 +1070,29 @@ a{color:var(--accd)}
       try {
         const fl = []; for (const f of r.files.filter((x) => x.pid === e.pid)) fl.push({ name: f.name, b64: await blobB64(f.blob) });
         const x = await scriptPost({ action: 'entwurf', to: e.to, cc: e.cc, subject: e.subject, body: e.body, files: fl });
-        e.state = 'ok'; e.msg = x.ersetzt ? 'Entwurf ersetzt' : 'Entwurf erstellt';
+        e.state = 'ok'; e.msg = x.ersetzt ? 'Entwurf ersetzt' : 'Entwurf erstellt'; e.draftId = x.id; e.sendState = null; e.sendMsg = '';
       } catch (err) { e.state = 'err'; e.msg = err.message; }
       render();
     }
-    S.entw.running = false; S.entw.done = list.every((e) => e.state === 'ok'); render();
+    S.entw.running = false; S.entw.done = list.every((e) => e.state === 'ok'); S.entw.sent = false; render();
+  }
+
+  /* Senden der geprüften Entwürfe: nur nach Rückfrage, jeder Entwurf höchstens einmal. */
+  async function entwuerfeSenden() {
+    const list = S.entw.list.filter((e) => e.state === 'ok' && e.draftId && e.sendState !== 'ok');
+    if (!list.length) return;
+    const zeilen = list.map((e) => `• ${e.to}${e.cc ? ' (CC ' + e.cc + ')' : ''}`).join('\n');
+    if (!confirm(`${list.length} E-Mail${list.length === 1 ? '' : 's'} jetzt wirklich senden?\n\n${zeilen}\n\nDas kann nicht rückgängig gemacht werden.`)) return;
+    S.entw.sending = true; render();
+    for (const e of list) {
+      e.sendState = 'run'; render();
+      try {
+        const x = await scriptPost({ action: 'senden', draftId: e.draftId });
+        e.sendState = 'ok'; e.sendMsg = x.simuliert ? 'Test: Senden geprüft, nicht wirklich gesendet (@example.com)' : 'gesendet';
+      } catch (err) { e.sendState = 'err'; e.sendMsg = err.message; }
+      render();
+    }
+    S.entw.sending = false; S.entw.sent = S.entw.list.every((e) => e.sendState === 'ok'); render();
   }
 
   const MARK = { ok: '✓', err: '✗', run: '…', skip: '–' };
@@ -1088,8 +1114,8 @@ a{color:var(--accd)}
     // Gmail
     out.append(h('h3', { class: 'mt' }, '2. Gmail-Entwürfe'));
     if (!S.entw) {
-      out.append(h('p', { class: 'muted small' }, 'Pro Person ein Entwurf mit beiden PDFs, CC an den Arbeitgeber. Es wird nichts gesendet: Du prüfst und sendest selbst in Gmail.'),
-        h('button', { class: 'btn sec', onclick: () => { const ps = d.persons.filter((p) => r.files.some((f) => f.pid === p.id)); S.entw = { list: ps.map((p) => mailDraft(p, r.key)) }; render(); } }, 'Entwürfe ansehen'));
+      out.append(h('p', { class: 'muted small' }, 'Pro Person ein Entwurf mit den PDFs, CC an den Arbeitgeber. Gesendet wird erst in Schritt 3, nach deiner Kontrolle und einer Rückfrage.'),
+        h('button', { class: 'btn sec', onclick: () => { const ps = d.persons.filter((p) => r.files.some((f) => f.pid === p.id)); S.entw = { list: ps.map((p) => mailDraft(p, r.key, !r.files.some((f) => f.pid === p.id && /Stundenübersicht/.test(f.name)))) }; render(); } }, 'Entwürfe ansehen'));
       return out;
     }
     const probs = [];
@@ -1101,13 +1127,25 @@ a{color:var(--accd)}
         h('div', { class: 'small' }, h('b', {}, 'Betreff: '), (isTest() ? '[TEST] ' : '') + e.subject),
         h('pre', {}, e.body),
         h('div', { class: 'small muted' }, 'Anhänge: ' + r.files.filter((f) => f.pid === e.pid).map((f) => f.name).join(', ')),
-        e.state ? stepLine('Gmail', e) : null));
+        e.state ? stepLine('Gmail', e) : null,
+        e.sendState ? stepLine('Senden', { state: e.sendState, msg: e.sendMsg }) : null));
     });
     if (!d.employer.email) probs.push('Arbeitgeber: keine E-Mail-Adresse für CC in den Einstellungen.');
     if (probs.length) out.append(h('div', { class: 'blockers' }, probs.map((x) => h('p', {}, x))));
-    if (S.entw.done) out.append(h('p', { class: 'ok' }, 'Die Entwürfe liegen in Gmail. Bitte dort prüfen und selbst senden.'));
-    out.append(h('button', { class: 'btn', disabled: !!(S.entw.running || probs.length), onclick: entwuerfeErstellen },
+    const anySent = S.entw.list.some((e) => e.sendState === 'ok');
+    if (S.entw.done && !anySent) out.append(h('p', { class: 'ok' }, 'Die Entwürfe liegen in Gmail. Du kannst sie dort ansehen oder hier senden.'));
+    if (!anySent) out.append(h('button', { class: S.entw.done ? 'btn sec' : 'btn', disabled: !!(S.entw.running || S.entw.sending || probs.length), onclick: entwuerfeErstellen },
       S.entw.running ? 'Erstelle Entwürfe …' : (S.entw.done ? 'Entwürfe nochmals erstellen (ersetzt sie)' : 'Entwürfe in Gmail erstellen')));
+    // 3. Senden
+    if (S.entw.done) {
+      out.append(h('h3', { class: 'mt' }, '3. Senden'));
+      const offen = S.entw.list.filter((e) => e.sendState !== 'ok').length;
+      if (S.entw.sent) out.append(h('p', { class: 'ok' }, isTest() ? 'Test abgeschlossen: Senden geprüft.' : 'Alle Lohnabrechnungen sind gesendet.'));
+      else {
+        out.append(h('p', { class: 'muted small' }, 'Sendet die geprüften Entwürfe oben. Vorher kommt eine Rückfrage mit allen Empfängern. Gesendet wird nur an Adressen, die im Script erlaubt sind.'));
+        out.append(h('button', { class: 'btn', disabled: !!S.entw.sending, onclick: entwuerfeSenden }, S.entw.sending ? 'Sende …' : `Jetzt senden (${offen})`));
+      }
+    }
     return out;
   }
 
