@@ -902,7 +902,8 @@ a{color:var(--accd)}
   async function createDocs() {
     const d = S.data; const dr = ensureDraft(); const ev = evaluate(); const { y, m } = keyYM(dr.key);
     if (ev.blockers.length) return;
-    if (d.months[dr.key] && !confirm('Für diesen Monat wurden schon Dokumente erstellt. Neu erstellen und den Eintrag in der Jahresübersicht ersetzen?')) return;
+    const sn = sentNames(dr.key);
+    if (d.months[dr.key] && !confirm('Für diesen Monat wurden schon Dokumente erstellt. Neu erstellen und den Eintrag in der Jahresübersicht ersetzen?' + (sn.length ? `\n\nAchtung: Bereits gesendet an ${sn.join(', ')}. Diese Personen erhalten aus der App keine neue E-Mail; eine Korrektur bitte selbst in Gmail senden (Betreff mit «(korrigiert)»).` : ''))) return;
     S.busy = true; render();
     try {
       const files = []; const rec = { created: new Date().toISOString(), persons: {} };
@@ -957,6 +958,7 @@ a{color:var(--accd)}
       h('button', { class: 'btn', disabled: S.fetching, onclick: fetchHours }, S.fetching ? 'Hole Stunden …' : 'Stunden holen'),
       h('button', { class: 'linkbtn', onclick: () => fileIn.click() }, 'Reserve: stattdessen CSV-Datei einlesen'), fileIn,
       d.persons.some((p) => p.id.startsWith('demo')) ? h('button', { class: 'btn sec', onclick: () => { applyCsv(demoCsv(y, m, d.persons), 'Beispiel.csv'); render(); } }, 'Beispiel-CSV laden (erfunden)') : null,
+      sentNames(dr.key).length ? h('p', { class: 'ok small' }, 'Lohnabrechnungen für diesen Monat bereits gesendet: ' + sentNames(dr.key).join(', ') + '.') : null,
       infoBlock(dr)));
 
     // Personen
@@ -1110,6 +1112,12 @@ a{color:var(--accd)}
     S.ablage.running = false; S.ablage.done = steps.every((s) => s.state === 'ok'); render();
   }
 
+  /* Gesendete Lohnabrechnungen dauerhaft merken (verschlüsselt im Gerät und in der Sicherung), damit nach einem Neustart nicht nochmals gesendet wird. */
+  const sentOf = (key) => ((S.data.gesendet || {})[key] || {});
+  const nowTxt = () => { const t = new Date(); const z = (n) => String(n).padStart(2, '0'); return `${z(t.getDate())}.${z(t.getMonth() + 1)}.${t.getFullYear()} ${z(t.getHours())}:${z(t.getMinutes())}`; };
+  function markSent(key, pid, test) { const d = S.data; if (!d.gesendet) d.gesendet = {}; if (!d.gesendet[key]) d.gesendet[key] = {}; d.gesendet[key][pid] = nowTxt() + (test ? ' (Test)' : ''); saveSoon(); }
+  function sentNames(key) { const g = sentOf(key); return S.data.persons.filter((p) => g[p.id]).map((p) => `${p.kurzname} (${g[p.id]})`); }
+
   function mailDraft(p, key, ohneStunden) {
     const { y, m } = keyYM(key); const d = S.data;
     const satz = ohneStunden ? `Hier ist deine Lohnabrechnung vom ${C.MONATE[m - 1]}.` : `Hier ist deine Lohnabrechnung vom ${C.MONATE[m - 1]} mit der Stundenübersicht.`;
@@ -1123,6 +1131,7 @@ a{color:var(--accd)}
     const r = S.result; const list = S.entw.list;
     S.entw.running = true; render();
     for (const e of list) {
+      if (e.sendState === 'ok') continue;
       e.state = 'run'; render();
       try {
         const fl = []; for (const f of r.files.filter((x) => x.pid === e.pid)) fl.push({ name: f.name, b64: await blobB64(f.blob) });
@@ -1131,12 +1140,17 @@ a{color:var(--accd)}
       } catch (err) { e.state = 'err'; e.msg = err.message; }
       render();
     }
-    S.entw.running = false; S.entw.done = list.every((e) => e.state === 'ok'); S.entw.sent = false; render();
+    S.entw.running = false; S.entw.done = list.every((e) => e.state === 'ok'); S.entw.sent = list.every((e) => e.sendState === 'ok'); render();
   }
 
   function entwListe() {
     const r = S.result; const d = S.data;
-    return d.persons.filter((p) => r.files.some((f) => f.pid === p.id)).map((p) => mailDraft(p, r.key, !r.files.some((f) => f.pid === p.id && /Stundenübersicht/.test(f.name))));
+    const g = sentOf(r.key);
+    return d.persons.filter((p) => r.files.some((f) => f.pid === p.id)).map((p) => {
+      const e = mailDraft(p, r.key, !r.files.some((f) => f.pid === p.id && /Stundenübersicht/.test(f.name)));
+      if (g[p.id]) Object.assign(e, { state: 'ok', msg: 'kein neuer Entwurf (schon gesendet)', sendState: 'ok', sendMsg: `bereits gesendet am ${g[p.id]} – Korrektur bitte selbst in Gmail senden` });
+      return e;
+    });
   }
   function entwProbs(list) {
     const d = S.data; const probs = [];
@@ -1153,6 +1167,7 @@ a{color:var(--accd)}
     await driveAblegen();
     if (!S.ablage.done) { S.kombi = { err: 'Die Ablage ist nicht vollständig. Es wurden keine Entwürfe erstellt. Details unten bei „1. Im Drive ablegen“.' }; render(); return; }
     await entwuerfeErstellen();
+    if (S.entw.list.every((e) => e.sendState === 'ok')) { S.kombi = { ok: 'Im Drive abgelegt. Alle Lohnabrechnungen dieses Monats wurden schon gesendet – es wurden keine neuen Entwürfe erstellt. Eine Korrektur bitte selbst in Gmail senden.' }; render(); return; }
     S.kombi = S.entw.done ? { ok: 'Abgelegt und Entwürfe erstellt. Bitte die Entwürfe unten prüfen, dann bei „3. Senden“ senden.' } : { err: 'Im Drive abgelegt, aber nicht alle Entwürfe erstellt. Details unten bei „2. Gmail-Entwürfe“.' };
     render();
   }
@@ -1169,6 +1184,7 @@ a{color:var(--accd)}
       try {
         const x = await scriptPost({ action: 'senden', draftId: e.draftId });
         e.sendState = 'ok'; e.sendMsg = x.simuliert ? 'Test: Senden geprüft, nicht wirklich gesendet (@example.com)' : 'gesendet';
+        markSent(S.result.key, e.pid, !!x.simuliert);
       } catch (err) { e.sendState = 'err'; e.sendMsg = err.message; }
       render();
     }
