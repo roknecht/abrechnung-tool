@@ -161,20 +161,26 @@ a{color:var(--accd)}
   function distribute(totalHours, days) {
     const T = Number(totalHours); const D = days.length;
     if (!isFinite(T) || T <= 0) return { error: 'Bitte ein Stundentotal grösser als 0 eingeben.' };
-    if (Math.abs(T - Math.round(T)) > 1e-9) return { error: 'Das Total muss in ganzen Stunden sein, damit je Tag 4 oder 5 Stunden möglich sind.' };
+    if (Math.abs(T - Math.round(T)) > 1e-9) return { error: 'Das Total muss in ganzen Stunden sein, damit je Tag 4 oder 5 Stunden (wenn nötig 3) möglich sind.' };
     const t = Math.round(T);
-    const lo = Math.ceil(t / 5); const hi = Math.min(Math.floor(t / 4), D);
-    if (lo > hi) {
-      if (t > 5 * D) return { error: `Mit ${D} Sonntagen/Donnerstagen sind höchstens ${5 * D} Stunden möglich.` };
-      return { error: `${t} Stunden lassen sich nicht in Tage mit je 4 oder 5 Stunden aufteilen.` };
+    if (t > 5 * D) return { error: `Mit ${D} Sonntagen/Donnerstagen sind höchstens ${5 * D} Stunden möglich.` };
+    // Zuerst nur 4- und 5-Stunden-Einsätze; geht das nicht auf, so wenige 3-Stunden-Einsätze wie möglich dazu.
+    for (let threes = 0; threes <= D; threes++) {
+      const r = t - 3 * threes; if (r < 0) break;
+      const lo = Math.ceil(r / 5); const hi = Math.min(Math.floor(r / 4), D - threes);
+      if (lo > hi) continue;
+      let n4 = Math.round(r / 4.5); if (n4 < lo) n4 = lo; if (n4 > hi) n4 = hi;
+      const fives = r - 4 * n4; const n = n4 + threes;
+      const idx = []; // gleichmässig verteilte Tage
+      for (let k = 0; k < n; k++) idx.push(n === 1 ? Math.floor((D - 1) / 2) : Math.round(k * (D - 1) / (n - 1)));
+      const val = new Array(n).fill(400);
+      const three = new Set(); for (let k = 0; k < threes; k++) three.add(Math.floor((k + 0.5) * n / threes));
+      three.forEach((k) => { val[k] = 300; });
+      const rest = []; for (let k = 0; k < n; k++) if (!three.has(k)) rest.push(k);
+      for (let k = 0; k < fives; k++) val[rest[Math.floor((k + 0.5) * rest.length / fives)]] = 500;
+      return { days: idx.map((di, k) => ({ date: days[di], hc: val[k] })) };
     }
-    let n = Math.round(t / 4.5); if (n < lo) n = lo; if (n > hi) n = hi;
-    const fives = t - 4 * n;
-    const idx = []; // gleichmässig verteilte Tage
-    for (let k = 0; k < n; k++) idx.push(n === 1 ? Math.floor((D - 1) / 2) : Math.round(k * (D - 1) / (n - 1)));
-    const five = new Set();
-    for (let k = 0; k < fives; k++) five.add(Math.floor((k + 0.5) * n / fives));
-    return { days: idx.map((di, k) => ({ date: days[di], hc: five.has(k) ? 500 : 400 })) };
+    return { error: `${t} Stunden lassen sich nicht in Tage mit je 3, 4 oder 5 Stunden aufteilen.` };
   }
 
   /* ---------- CSV ---------- */
@@ -788,19 +794,19 @@ a{color:var(--accd)}
   function prevMonth() { const t = new Date(); let y = t.getFullYear(); let m = t.getMonth(); if (m === 0) { m = 12; y--; } return { y, m }; }
   function ensureDraft() {
     const d = S.data;
-    if (!d.draft) { const { y, m } = prevMonth(); d.draft = { key: C.monthKey(y, m), days: {}, csvHc: {}, skip: {}, excess: {}, pTotal: {}, info: null }; }
+    if (!d.draft) { const { y, m } = prevMonth(); d.draft = { key: C.monthKey(y, m), days: {}, csvHc: {}, skip: {}, excess: {}, pTotal: {}, pending: {}, info: null }; }
     return d.draft;
   }
   const keyYM = (k) => ({ y: Number(k.slice(0, 4)), m: Number(k.slice(5)) });
   const dayHc = (dr, id) => (dr.days[id] || []).reduce((a, q) => a + q.hc, 0);
-  function resetDraft(key) { S.data.draft = { key, days: {}, csvHc: {}, skip: {}, excess: {}, pTotal: {}, info: null }; S.result = null; saveSoon(); }
+  function resetDraft(key) { S.data.draft = { key, days: {}, csvHc: {}, skip: {}, excess: {}, pTotal: {}, pending: {}, info: null }; S.result = null; saveSoon(); }
 
   function applyCsv(text, filename) {
     const dr = ensureDraft(); const { y, m } = keyYM(dr.key); const d = S.data;
     const res = C.importClockify(text, y, m, d.persons.filter((p) => !p.pauschal));
     if (res.errors.length) { dr.info = { errors: res.errors, headers: res.headers || null, filename }; saveSoon(); return; }
     const keep = {}; d.persons.filter((p) => p.pauschal).forEach((p) => { keep[p.id] = dr.days[p.id] || []; });
-    dr.days = keep; dr.csvHc = {}; dr.skip = {}; dr.excess = {};
+    dr.days = keep; dr.csvHc = {}; dr.skip = {}; dr.excess = {}; dr.pending = {};
     d.persons.filter((p) => !p.pauschal).forEach((p) => {
       const bp = res.byPerson[p.id];
       dr.days[p.id] = bp ? Object.keys(bp.days).sort().map((dt) => ({ date: dt, hc: bp.days[dt] })) : [];
@@ -822,19 +828,29 @@ a{color:var(--accd)}
       r = await resp.json();
     } catch (e) { return fail('Keine Verbindung zur Stundenerfassung. Bitte Internet prüfen und nochmals versuchen.'); }
     if (!r || !r.ok) return fail((r && r.error) || 'Unbekannter Fehler beim Abruf.');
-    if (!r.rows) { const ab = r.abschluss || []; d.persons.filter((p) => !p.pauschal).forEach((p) => { dr.days[p.id] = []; dr.csvHc[p.id] = 0; }); dr.skip = {}; dr.excess = {}; dr.info = { errors: ['Für diesen Monat sind in der Stundenerfassung noch keine Stunden eingetragen.'], headers: null, filename: 'Stundenerfassung', abschluss: ab }; S.fetching = false; saveSoon(); render(); return; }
-    applyCsv(r.csv, 'Stundenerfassung ' + dr.key);
-    if (dr.info) dr.info.abschluss = r.abschluss || [];
+    const ab = r.abschluss || [];
+    if (!r.rows) { d.persons.filter((p) => !p.pauschal).forEach((p) => { dr.days[p.id] = []; dr.csvHc[p.id] = 0; }); dr.skip = {}; dr.excess = {}; dr.info = { errors: ['Für diesen Monat sind in der Stundenerfassung noch keine Stunden eingetragen.'], headers: null, filename: 'Stundenerfassung', abschluss: ab }; }
+    else { applyCsv(r.csv, 'Stundenerfassung ' + dr.key); if (dr.info) dr.info.abschluss = ab; }
+    // Nur Stunden von Personen übernehmen, die den Monat abgeschickt haben (Status «abgeschickt» im Blatt «Abschluss»).
+    if (!(dr.info && dr.info.errors && dr.info.errors.length && r.rows)) {
+      dr.pending = {};
+      d.persons.filter((p) => !p.pauschal).forEach((p) => {
+        const a = absOf(ab, p);
+        if (a && a.status === 'abgeschickt') return;
+        dr.pending[p.id] = dayHc(dr, p.id); dr.days[p.id] = []; dr.csvHc[p.id] = 0;
+      });
+    }
     S.fetching = false; S.result = null; saveSoon(); render();
   }
+  const absOf = (ab, p) => ab.find((x) => C.norm(x.name) === C.norm(p.kurzname) || C.norm(x.name) === C.norm(p.name));
   /* Hinweise zum Abschluss: wer hat den Monat abgeschickt, stimmen die Totale? */
   function abschlussNotes(dr) {
     const ab = dr.info && dr.info.abschluss; if (!ab) return [];
     const out = [];
     S.data.persons.filter((p) => !p.pauschal && !dr.skip[p.id]).forEach((p) => {
-      const a = ab.find((x) => C.norm(x.name) === C.norm(p.kurzname) || C.norm(x.name) === C.norm(p.name));
-      const hc = dayHc(dr, p.id);
-      if (!a || a.status !== 'abgeschickt') out.push(`${p.kurzname}: hat den Monat noch nicht abgeschickt${hc > 0 ? ' (Stunden sind aber eingetragen)' : ''}.`);
+      const a = absOf(ab, p);
+      const hc = dayHc(dr, p.id); const pend = (dr.pending || {})[p.id];
+      if (!a || a.status !== 'abgeschickt') out.push(`${p.kurzname}: hat den Monat noch nicht abgeschickt${a && a.status === 'offen' ? ' (wieder zum Bearbeiten geöffnet)' : ''}${pend > 0 ? ` – ${C.fmtHc(pend)} h eingetragen, aber noch nicht übernommen` : ''}.`);
       else if (Math.round(a.total * 100) !== hc) out.push(`${p.kurzname}: Total beim Abschicken ${a.total.toFixed(2)} h, jetzt ${C.fmtHc(hc)} h – nach dem Abschicken geändert?`);
     });
     return out;
@@ -848,6 +864,7 @@ a{color:var(--accd)}
       const r = { p, days, hc, skip };
       // Nicht gearbeitet: Lohnabrechnung mit 0.00 (ohne Stundenübersicht), Monat in der Jahresübersicht mit 0.00
       if (skip) { r.state = 'skip'; r.calc = C.calcPerson(p, 0, d.settings, {}); rows.push(r); return; }
+      if (!p.pauschal && dr.pending && dr.pending[p.id] != null) { r.state = 'pending'; blockers.push(`${p.kurzname}: hat den Monat noch nicht abgeschickt – später nochmals «Stunden holen».`); rows.push(r); return; }
       if (hc <= 0) { r.state = 'missing'; blockers.push(`${p.kurzname}: keine Stunden erfasst – bitte entscheiden.`); rows.push(r); return; }
       if (p.pauschal) {
         const t = dr.pTotal[p.id];
@@ -926,7 +943,7 @@ a{color:var(--accd)}
 
     // Kontrolle
     const tbl = h('table', { class: 'tbl compact' }, h('thead', {}, h('tr', {}, ['Person', 'Std.', 'Brutto', 'AHV', 'Netto'].map((t, i) => h('th', { class: i ? 'r' : '' }, t)))),
-      h('tbody', {}, ev.rows.map((r) => h('tr', {}, h('td', { class: 'wrap' }, r.p.kurzname, r.state === 'skip' ? h('div', { class: 'muted small' }, 'nicht gearbeitet') : null), h('td', { class: 'r' }, r.state === 'ok' ? C.fmtHc(r.hc) : (r.state === 'skip' ? '0.00' : '?')),
+      h('tbody', {}, ev.rows.map((r) => h('tr', {}, h('td', { class: 'wrap' }, r.p.kurzname, r.state === 'skip' ? h('div', { class: 'muted small' }, 'nicht gearbeitet') : null), h('td', { class: 'r' }, r.state === 'ok' ? C.fmtHc(r.hc) : (r.state === 'skip' ? '0.00' : (r.state === 'pending' ? 'offen' : '?'))),
         h('td', { class: 'r' }, r.calc ? C.fmtMoney(r.calc.bruttoC) : ''), h('td', { class: 'r' }, r.calc ? C.fmtMoney(r.calc.ahvC) : ''), h('td', { class: 'r' }, r.calc ? C.fmtMoney(r.calc.nettoC) : '')))),
       h('tfoot', {}, h('tr', {}, h('td', { class: 'wrap' }, 'Total aller Personen'), h('td', { class: 'r' }, C.fmtHc(ev.totalHc)), h('td', {}), h('td', {}), h('td', { class: 'r' }, C.fmtMoney(ev.rows.reduce((a, r) => a + (r.calc ? r.calc.nettoC : 0), 0))))));
     const csvDiff = ev.rows.filter((r) => !r.p.pauschal && r.state === 'ok' && dr.csvHc[r.p.id] != null && dr.info && !dr.info.errors.length && dr.csvHc[r.p.id] !== r.hc);
@@ -961,11 +978,17 @@ a{color:var(--accd)}
         h('button', { class: 'btn sec', onclick: () => { delete dr.skip[p.id]; saveSoon(); render(); } }, 'Rückgängig'));
       return card;
     }
+    if (r.state === 'pending') {
+      const pend = dr.pending[p.id];
+      card.append(h('p', { class: 'warn' }, `Noch nicht abgeschickt${pend > 0 ? ` (${C.fmtHc(pend)} h eingetragen)` : ''}. Die Stunden werden übernommen, sobald die Person den Monat abgeschickt hat. Dann nochmals «Stunden holen».`),
+        h('button', { class: 'btn sec', onclick: () => { if (!confirm(`${p.kurzname} hat den Monat nicht abgeschickt. Wirklich «nicht gearbeitet» (Lohnabrechnung mit 0.00)?`)) return; dr.skip[p.id] = true; saveSoon(); render(); } }, 'Hat nicht gearbeitet'));
+      return card;
+    }
     if (p.pauschal) {
       const first = mdays.find((x) => !used.has(x)) || mdays[0];
       const sat = C.sundaysThursdays(y, m);
       const msg = h('p', { class: 'err small' });
-      card.append(h('p', { class: 'muted small' }, 'Keine Erfassung. Stundentotal eingeben, dann wird auf Sonntage und Donnerstage (je 4 oder 5 Stunden) verteilt.'),
+      card.append(h('p', { class: 'muted small' }, 'Keine Erfassung. Stundentotal eingeben, dann wird auf Sonntage und Donnerstage verteilt (je 4 oder 5 Stunden, wenn nötig auch 3).'),
         h('label', {}, 'Stundentotal im Monat'), numInput(dr.pTotal[p.id] != null ? dr.pTotal[p.id] : '', (v) => { dr.pTotal[p.id] = v; saveSoon(); }, { placeholder: 'z. B. 36' }),
         h('button', { class: 'btn sec', onclick: () => {
           const t = dr.pTotal[p.id]; const res = C.distribute(t, sat);
