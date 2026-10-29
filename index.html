@@ -794,19 +794,19 @@ a{color:var(--accd)}
   function prevMonth() { const t = new Date(); let y = t.getFullYear(); let m = t.getMonth(); if (m === 0) { m = 12; y--; } return { y, m }; }
   function ensureDraft() {
     const d = S.data;
-    if (!d.draft) { const { y, m } = prevMonth(); d.draft = { key: C.monthKey(y, m), days: {}, csvHc: {}, skip: {}, excess: {}, pTotal: {}, pending: {}, info: null }; }
+    if (!d.draft) { const { y, m } = prevMonth(); d.draft = { key: C.monthKey(y, m), days: {}, csvHc: {}, skip: {}, excess: {}, pTotal: {}, pending: {}, manual: {}, info: null }; }
     return d.draft;
   }
   const keyYM = (k) => ({ y: Number(k.slice(0, 4)), m: Number(k.slice(5)) });
   const dayHc = (dr, id) => (dr.days[id] || []).reduce((a, q) => a + q.hc, 0);
-  function resetDraft(key) { S.data.draft = { key, days: {}, csvHc: {}, skip: {}, excess: {}, pTotal: {}, pending: {}, info: null }; S.result = null; saveSoon(); }
+  function resetDraft(key) { S.data.draft = { key, days: {}, csvHc: {}, skip: {}, excess: {}, pTotal: {}, pending: {}, manual: {}, info: null }; S.result = null; saveSoon(); }
 
   function applyCsv(text, filename) {
     const dr = ensureDraft(); const { y, m } = keyYM(dr.key); const d = S.data;
     const res = C.importClockify(text, y, m, d.persons.filter((p) => !p.pauschal));
     if (res.errors.length) { dr.info = { errors: res.errors, headers: res.headers || null, filename }; saveSoon(); return; }
     const keep = {}; d.persons.filter((p) => p.pauschal).forEach((p) => { keep[p.id] = dr.days[p.id] || []; });
-    dr.days = keep; dr.csvHc = {}; dr.skip = {}; dr.excess = {}; dr.pending = {};
+    dr.days = keep; dr.csvHc = {}; dr.skip = {}; dr.excess = {}; dr.pending = {}; dr.manual = {};
     d.persons.filter((p) => !p.pauschal).forEach((p) => {
       const bp = res.byPerson[p.id];
       dr.days[p.id] = bp ? Object.keys(bp.days).sort().map((dt) => ({ date: dt, hc: bp.days[dt] })) : [];
@@ -829,17 +829,38 @@ a{color:var(--accd)}
     } catch (e) { return fail('Keine Verbindung zur Stundenerfassung. Bitte Internet prüfen und nochmals versuchen.'); }
     if (!r || !r.ok) return fail((r && r.error) || 'Unbekannter Fehler beim Abruf.');
     const ab = r.abschluss || [];
+    const old = { days: JSON.parse(JSON.stringify(dr.days)), skip: Object.assign({}, dr.skip), excess: Object.assign({}, dr.excess), manual: Object.assign({}, dr.manual || {}) };
     if (!r.rows) { d.persons.filter((p) => !p.pauschal).forEach((p) => { dr.days[p.id] = []; dr.csvHc[p.id] = 0; }); dr.skip = {}; dr.excess = {}; dr.info = { errors: ['Für diesen Monat sind in der Stundenerfassung noch keine Stunden eingetragen.'], headers: null, filename: 'Stundenerfassung', abschluss: ab }; }
-    else { applyCsv(r.csv, 'Stundenerfassung ' + dr.key); if (dr.info) dr.info.abschluss = ab; }
-    // Nur Stunden von Personen übernehmen, die den Monat abgeschickt haben (Status «abgeschickt» im Blatt «Abschluss»).
-    if (!(dr.info && dr.info.errors && dr.info.errors.length && r.rows)) {
-      dr.pending = {};
-      d.persons.filter((p) => !p.pauschal).forEach((p) => {
-        const a = absOf(ab, p);
-        if (a && a.status === 'abgeschickt') return;
-        dr.pending[p.id] = dayHc(dr, p.id); dr.days[p.id] = []; dr.csvHc[p.id] = 0;
-      });
+    else {
+      applyCsv(r.csv, 'Stundenerfassung ' + dr.key);
+      if (dr.info && dr.info.errors && dr.info.errors.length) { S.fetching = false; saveSoon(); render(); return; }
+      dr.info.abschluss = ab;
     }
+    d.persons.filter((p) => p.pauschal).forEach((p) => { if (old.excess[p.id]) dr.excess[p.id] = old.excess[p.id]; });
+    // Nur Stunden von Personen übernehmen, die den Monat abgeschickt haben (Status «abgeschickt» im Blatt «Abschluss»).
+    // Bestehende Stunden in der App werden nur nach Rückfrage durch abgeschickte Stunden ersetzt.
+    dr.pending = {}; dr.manual = {};
+    const sig = (arr) => (arr || []).map((q) => q.date + ':' + q.hc).sort().join('|');
+    const keepOld = (p) => { dr.days[p.id] = old.days[p.id] || []; if (old.excess[p.id]) dr.excess[p.id] = old.excess[p.id]; if (old.manual[p.id]) dr.manual[p.id] = true; };
+    d.persons.filter((p) => !p.pauschal).forEach((p) => {
+      const a = absOf(ab, p); const sub = !!a && a.status === 'abgeschickt';
+      const oldDays = old.days[p.id] || []; const oldHc = oldDays.reduce((x, q) => x + q.hc, 0);
+      const newHc = dayHc(dr, p.id);
+      if (!sub) {
+        dr.pending[p.id] = newHc;
+        if (old.manual[p.id] && oldDays.length) { keepOld(p); delete dr.csvHc[p.id]; }
+        else { dr.days[p.id] = []; dr.csvHc[p.id] = 0; if (old.skip[p.id]) dr.skip[p.id] = true; }
+        return;
+      }
+      if (old.skip[p.id]) {
+        if (newHc > 0 && confirm(`${p.kurzname}: In der App steht «Hat nicht gearbeitet». Abgeschickt wurden ${C.fmtHc(newHc)} h.\n\nMit den abgeschickten Stunden überschreiben?`)) return;
+        dr.skip[p.id] = true; dr.days[p.id] = []; return;
+      }
+      if (!oldDays.length || sig(oldDays) === sig(dr.days[p.id])) { if (oldDays.length) keepOld(p); return; }
+      const was = `${C.fmtHc(oldHc)} h (${oldDays.length} Einsätze${old.manual[p.id] ? ', manuell eingetragen' : ''})`;
+      if (confirm(`${p.kurzname}: In der App stehen schon ${was}. Abgeschickt wurden ${C.fmtHc(newHc)} h.\n\nMit den abgeschickten Stunden überschreiben?`)) return;
+      keepOld(p);
+    });
     S.fetching = false; S.result = null; saveSoon(); render();
   }
   const absOf = (ab, p) => ab.find((x) => C.norm(x.name) === C.norm(p.kurzname) || C.norm(x.name) === C.norm(p.name));
@@ -850,7 +871,7 @@ a{color:var(--accd)}
     S.data.persons.filter((p) => !p.pauschal && !dr.skip[p.id]).forEach((p) => {
       const a = absOf(ab, p);
       const hc = dayHc(dr, p.id); const pend = (dr.pending || {})[p.id];
-      if (!a || a.status !== 'abgeschickt') out.push(`${p.kurzname}: hat den Monat noch nicht abgeschickt${a && a.status === 'offen' ? ' (wieder zum Bearbeiten geöffnet)' : ''}${pend > 0 ? ` – ${C.fmtHc(pend)} h eingetragen, aber noch nicht übernommen` : ''}.`);
+      if (!a || a.status !== 'abgeschickt') out.push(`${p.kurzname}: hat den Monat noch nicht abgeschickt${a && a.status === 'offen' ? ' (wieder zum Bearbeiten geöffnet)' : ''}${hc > 0 ? ' – in der App stehen deine manuell eingetragenen Stunden' : (pend > 0 ? ` – ${C.fmtHc(pend)} h eingetragen, aber noch nicht übernommen` : '')}.`);
       else if (Math.round(a.total * 100) !== hc) out.push(`${p.kurzname}: Total beim Abschicken ${a.total.toFixed(2)} h, jetzt ${C.fmtHc(hc)} h – nach dem Abschicken geändert?`);
     });
     return out;
@@ -864,7 +885,7 @@ a{color:var(--accd)}
       const r = { p, days, hc, skip };
       // Nicht gearbeitet: Lohnabrechnung mit 0.00 (ohne Stundenübersicht), Monat in der Jahresübersicht mit 0.00
       if (skip) { r.state = 'skip'; r.calc = C.calcPerson(p, 0, d.settings, {}); rows.push(r); return; }
-      if (!p.pauschal && dr.pending && dr.pending[p.id] != null) { r.state = 'pending'; blockers.push(`${p.kurzname}: hat den Monat noch nicht abgeschickt – später nochmals «Stunden holen».`); rows.push(r); return; }
+      if (!p.pauschal && dr.pending && dr.pending[p.id] != null && !days.length) { r.state = 'pending'; blockers.push(`${p.kurzname}: hat den Monat noch nicht abgeschickt – später nochmals «Stunden holen».`); rows.push(r); return; }
       if (hc <= 0) { r.state = 'missing'; blockers.push(`${p.kurzname}: keine Stunden erfasst – bitte entscheiden.`); rows.push(r); return; }
       if (p.pauschal) {
         const t = dr.pTotal[p.id];
@@ -971,6 +992,10 @@ a{color:var(--accd)}
   function personCard(r, dr, y, m) {
     const p = r.p; const days = dr.days[p.id] || (dr.days[p.id] = []);
     const used = new Set(days.map((q) => q.date)); const mdays = C.monthDays(y, m);
+    if (!S.open) S.open = {};
+    const isOpen = !!S.open[p.id];
+    const touch = () => { if (!p.pauschal) { if (!dr.manual) dr.manual = {}; dr.manual[p.id] = true; } };
+    const openEdit = () => { S.open[p.id] = true; };
     const card = h('div', { class: 'card' },
       h('div', { class: 'row between' }, h('h3', {}, p.kurzname), h('span', { class: 'tag' }, p.ahvAbzug ? 'mit AHV-Abzug' : 'ohne AHV-Abzug')));
     if (r.state === 'skip') {
@@ -978,42 +1003,49 @@ a{color:var(--accd)}
         h('button', { class: 'btn sec', onclick: () => { delete dr.skip[p.id]; saveSoon(); render(); } }, 'Rückgängig'));
       return card;
     }
-    if (r.state === 'pending') {
-      const pend = dr.pending[p.id];
-      card.append(h('p', { class: 'warn' }, `Noch nicht abgeschickt${pend > 0 ? ` (${C.fmtHc(pend)} h eingetragen)` : ''}. Die Stunden werden übernommen, sobald die Person den Monat abgeschickt hat. Dann nochmals «Stunden holen».`),
-        h('button', { class: 'btn sec', onclick: () => { if (!confirm(`${p.kurzname} hat den Monat nicht abgeschickt. Wirklich «nicht gearbeitet» (Lohnabrechnung mit 0.00)?`)) return; dr.skip[p.id] = true; saveSoon(); render(); } }, 'Hat nicht gearbeitet'));
+    const pend = dr.pending && dr.pending[p.id] != null && !p.pauschal;
+    const notWorked = (ask) => h('button', { class: 'btn sec', onclick: () => { if (ask && !confirm(ask)) return; dr.skip[p.id] = true; delete S.open[p.id]; saveSoon(); render(); } }, 'Hat nicht gearbeitet');
+    const startEntry = () => { if (!p.pauschal) { days.push({ date: mdays.find((x) => !used.has(x)) || mdays[0], hc: 0 }); touch(); } openEdit(); saveSoon(); render(); };
+    if (pend) {
+      const ph = dr.pending[p.id];
+      card.append(h('p', { class: 'warn' }, days.length
+        ? 'Noch nicht abgeschickt. Die Stunden unten hast du manuell eingetragen.'
+        : `Noch nicht abgeschickt${ph > 0 ? ` (${C.fmtHc(ph)} h eingetragen)` : ''}. Die Stunden werden übernommen, sobald die Person den Monat abgeschickt hat. Dann nochmals «Stunden holen».`));
+    }
+    if (!days.length && !isOpen) {
+      if (!pend) card.append(h('p', { class: 'muted' }, p.pauschal ? 'Noch keine Stunden für diesen Monat.' : 'Keine Stunden in diesem Monat.'));
+      card.append(h('div', { class: 'row' }, h('button', { class: 'btn', onclick: startEntry }, pend ? 'Manuell eintragen' : 'Stunden eintragen'),
+        notWorked(pend ? `${p.kurzname} hat den Monat nicht abgeschickt. Wirklich «nicht gearbeitet» (Lohnabrechnung mit 0.00)?` : '')));
       return card;
     }
-    if (p.pauschal) {
-      const first = mdays.find((x) => !used.has(x)) || mdays[0];
+    if (days.length) {
+      card.append(h('div', { class: 'row between' }, h('strong', {}, `${days.length} Einsätze · ${C.fmtHc(r.hc)} h`),
+        h('button', { class: 'btn sec small', onclick: () => { if (isOpen) delete S.open[p.id]; else openEdit(); render(); } }, isOpen ? 'Schliessen' : 'Bearbeiten')));
+    }
+    if (isOpen && p.pauschal) {
       const sat = C.sundaysThursdays(y, m);
       const msg = h('p', { class: 'err small' });
-      card.append(h('p', { class: 'muted small' }, 'Keine Erfassung. Stundentotal eingeben, dann wird auf Sonntage und Donnerstage verteilt (je 4 oder 5 Stunden, wenn nötig auch 3).'),
+      card.append(h('p', { class: 'muted small' }, 'Stundentotal eingeben, dann wird auf Sonntage und Donnerstage verteilt (je 4 oder 5 Stunden, wenn nötig auch 3).'),
         h('label', {}, 'Stundentotal im Monat'), numInput(dr.pTotal[p.id] != null ? dr.pTotal[p.id] : '', (v) => { dr.pTotal[p.id] = v; saveSoon(); }, { placeholder: 'z. B. 36' }),
-        h('button', { class: 'btn sec', onclick: () => {
+        h('button', { class: 'btn', onclick: () => {
           const t = dr.pTotal[p.id]; const res = C.distribute(t, sat);
           if (res.error) { msg.textContent = res.error; return; } days.splice(0, days.length, ...res.days); saveSoon(); render();
         } }, 'Verteilung vorschlagen'), msg);
-      if (!days.length && r.state === 'missing') card.append(h('button', { class: 'btn sec', onclick: () => { dr.skip[p.id] = true; saveSoon(); render(); } }, 'Hat nicht gearbeitet'));
-    } else if (r.state === 'missing' && !days.length) {
-      card.append(h('p', { class: 'warn' }, 'Keine Einträge in diesem Monat gefunden. Hat die Person nicht gearbeitet?'),
-        h('div', { class: 'row' }, h('button', { class: 'btn', onclick: () => { dr.skip[p.id] = true; saveSoon(); render(); } }, 'Ja, nicht gearbeitet'),
-          h('button', { class: 'btn sec', onclick: () => { days.push({ date: mdays[0], hc: 0 }); saveSoon(); render(); } }, 'Nein, Stunden eintragen')));
+      if (!days.length) card.append(h('div', { class: 'row' }, h('button', { class: 'btn sec', onclick: () => { delete S.open[p.id]; render(); } }, 'Abbrechen'), notWorked('')));
     }
-    if (days.length) {
+    if (isOpen && days.length) {
       const first = mdays.find((x) => !used.has(x)) || mdays[0];
       const list = h('div', { class: 'days' });
       days.forEach((q, idx) => list.append(h('div', { class: 'dayrow' },
-        h('input', { type: 'date', value: q.date, min: mdays[0], max: mdays[mdays.length - 1], onchange: (e) => { if (e.target.value) { q.date = e.target.value; days.sort((a, b) => a.date.localeCompare(b.date)); saveSoon(); render(); } } }),
+        h('input', { type: 'date', value: q.date, min: mdays[0], max: mdays[mdays.length - 1], onchange: (e) => { if (e.target.value) { q.date = e.target.value; days.sort((a, b) => a.date.localeCompare(b.date)); touch(); saveSoon(); render(); } } }),
         h('span', { class: 'wd' }, C.weekdayName(q.date).slice(0, 2)),
-        numInput(q.hc ? (q.hc / 100).toFixed(2) : '', (v) => { q.hc = Math.round(v * 100); saveSoon(); render(); }, { class: 'hrs' }),
-        h('button', { class: 'x', title: 'Zeile löschen', onclick: () => { days.splice(idx, 1); saveSoon(); render(); } }, '×'))));
-      card.append(list, h('div', { class: 'row between' }, h('button', { class: 'btn sec small', onclick: () => { days.push({ date: first, hc: 0 }); days.sort((a, b) => a.date.localeCompare(b.date)); saveSoon(); render(); } }, '+ Tag'),
-        h('strong', {}, `${days.length} Einsätze · ${C.fmtHc(r.hc)} h`)));
-      if (p.pauschal && dr.pTotal[p.id] != null) {
-        const ok = Math.round(dr.pTotal[p.id] * 100) === r.hc;
-        card.append(h('p', { class: ok ? 'ok small' : 'err small' }, ok ? `Summe stimmt mit dem Total (${Number(dr.pTotal[p.id]).toFixed(2)} h) überein.` : `Summe ${C.fmtHc(r.hc)} h ≠ Total ${Number(dr.pTotal[p.id]).toFixed(2)} h.`));
-      }
+        numInput(q.hc ? (q.hc / 100).toFixed(2) : '', (v) => { q.hc = Math.round(v * 100); touch(); saveSoon(); render(); }, { class: 'hrs' }),
+        h('button', { class: 'x', title: 'Zeile löschen', onclick: () => { days.splice(idx, 1); touch(); saveSoon(); render(); } }, '×'))));
+      card.append(list, h('div', { class: 'row between' }, h('button', { class: 'btn sec small', onclick: () => { days.push({ date: first, hc: 0 }); days.sort((a, b) => a.date.localeCompare(b.date)); touch(); saveSoon(); render(); } }, '+ Tag')));
+    }
+    if (p.pauschal && days.length && dr.pTotal[p.id] != null) {
+      const ok = Math.round(dr.pTotal[p.id] * 100) === r.hc;
+      card.append(h('p', { class: ok ? 'ok small' : 'err small' }, ok ? `Summe stimmt mit dem Total (${Number(dr.pTotal[p.id]).toFixed(2)} h) überein.` : `Summe ${C.fmtHc(r.hc)} h ≠ Total ${Number(dr.pTotal[p.id]).toFixed(2)} h.`));
     }
     if (r.calc && r.calc.excess) {
       const sel = h('select', { onchange: (e) => { if (e.target.value) dr.excess[p.id] = e.target.value; else delete dr.excess[p.id]; saveSoon(); render(); } },
