@@ -717,17 +717,26 @@ a{color:var(--acc)}
     v: 1, settings: { stundenlohn: 35, ferien: 8.33, ahv: 5.3, freibetrag: 1400, abrufKey: '' },
     employer: { name: '', strasse: '', ort: '', email: '' }, persons: [], months: {}, draft: null,
   });
+  // vaultGen: wird beim Löschen/Ersetzen aller Daten erhöht, damit ein noch laufender Speichervorgang sie nicht wiederherstellt
+  let vaultGen = 0;
   async function save() {
-    const blob = await encryptWith(S.key, S.data);
+    const gen = vaultGen; const blob = await encryptWith(S.key, S.data);
+    if (gen !== vaultGen) return;
     localStorage.setItem(VAULT_KEY, JSON.stringify({ v: 1, salt: b64(S.salt), iter: ITER, iv: blob.iv, ct: blob.ct }));
   }
   let saveTimer = null;
-  function saveSoon() { clearTimeout(saveTimer); saveTimer = setTimeout(() => save().catch(() => {}), 400); }
+  function saveSoon() { clearTimeout(saveTimer); saveTimer = setTimeout(() => { saveTimer = null; save().catch(() => {}); }, 400); }
+  // Sofort speichern (z. B. «gesendet»), ohne die 0.4 s Wartezeit
+  function saveNow() { clearTimeout(saveTimer); saveTimer = null; if (S.key && S.data) save().catch(() => {}); }
+  // Offenen Speichervorgang sofort erledigen (vor dem Sperren, beim Wechsel in den Hintergrund)
+  function flushSave() { if (saveTimer) saveNow(); }
+  // Vor dem Löschen/Ersetzen aller Daten: offenes und laufendes Speichern verwerfen
+  function dropSaves() { clearTimeout(saveTimer); saveTimer = null; vaultGen++; }
 
   /* ---------- Sperre / Start ---------- */
-  function lock() { S.key = null; S.data = null; S.result = null; S.editing = null; render(); }
+  function lock() { flushSave(); S.key = null; S.data = null; S.result = null; S.editing = null; render(); }
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden) { S.hiddenAt = Date.now(); } else if (S.key && S.hiddenAt && Date.now() - S.hiddenAt > 120000) lock();
+    if (document.hidden) { S.hiddenAt = Date.now(); flushSave(); } else if (S.key && S.hiddenAt && Date.now() - S.hiddenAt > 120000) lock();
   });
 
   function viewOnboarding() {
@@ -777,7 +786,7 @@ a{color:var(--acc)}
     };
     pin.addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
     return h('div', { class: 'center mid lock' }, h('h1', {}, 'Abrechnung'), h('p', { class: 'muted' }, 'Gesperrt'), pin, err, h('button', { class: 'btn', onclick: go }, 'Entsperren'),
-      h('p', { class: 'muted small' }, 'PIN vergessen? Dann nur mit einer Sicherungsdatei: Daten löschen und beim Start die Sicherung laden. ', h('a', { href: '#', onclick: (e) => { e.preventDefault(); if (confirm('Wirklich ALLE Daten in diesem Gerät löschen? Das geht nur mit einer Sicherungsdatei rückgängig.') && confirm('Letzte Rückfrage: Alles löschen?')) { localStorage.removeItem(VAULT_KEY); render(); } } }, 'Alle Daten löschen')));
+      h('p', { class: 'muted small' }, 'PIN vergessen? Dann nur mit einer Sicherungsdatei: Daten löschen und beim Start die Sicherung laden. ', h('a', { href: '#', onclick: (e) => { e.preventDefault(); if (confirm('Wirklich ALLE Daten in diesem Gerät löschen? Das geht nur mit einer Sicherungsdatei rückgängig.') && confirm('Letzte Rückfrage: Alles löschen?')) { dropSaves(); localStorage.removeItem(VAULT_KEY); render(); } } }, 'Alle Daten löschen')));
   }
 
   /* ---------- Beispieldaten (erfunden) ---------- */
@@ -1130,7 +1139,7 @@ a{color:var(--acc)}
   /* Gesendete Lohnabrechnungen dauerhaft merken (verschlüsselt im Gerät und in der Sicherung), damit nach einem Neustart nicht nochmals gesendet wird. */
   const sentOf = (key) => ((S.data.gesendet || {})[key] || {});
   const nowTxt = () => { const t = new Date(); const z = (n) => String(n).padStart(2, '0'); return `${z(t.getDate())}.${z(t.getMonth() + 1)}.${t.getFullYear()} ${z(t.getHours())}:${z(t.getMinutes())}`; };
-  function markSent(key, pid, test) { const d = S.data; if (!d.gesendet) d.gesendet = {}; if (!d.gesendet[key]) d.gesendet[key] = {}; d.gesendet[key][pid] = nowTxt() + (test ? ' (Test)' : ''); saveSoon(); }
+  function markSent(key, pid, test) { const d = S.data; if (!d.gesendet) d.gesendet = {}; if (!d.gesendet[key]) d.gesendet[key] = {}; d.gesendet[key][pid] = nowTxt() + (test ? ' (Test)' : ''); saveNow(); }
   function sentNames(key) { const g = sentOf(key); return S.data.persons.filter((p) => g[p.id]).map((p) => `${p.kurzname} (${g[p.id]})`); }
 
   function mailDraft(p, key, ohneStunden) {
@@ -1192,7 +1201,7 @@ a{color:var(--acc)}
     const list = S.entw.list.filter((e) => e.state === 'ok' && e.draftId && e.sendState !== 'ok');
     if (!list.length) return;
     const zeilen = list.map((e) => `• ${e.to}${e.cc ? ' (CC ' + e.cc + ')' : ''}`).join('\n');
-    if (!confirm(`${list.length} E-Mail${list.length === 1 ? '' : 's'} jetzt wirklich senden?\n\n${zeilen}\n\nDas kann nicht rückgängig gemacht werden.`)) return;
+    if (!confirm(`${list.length} E-Mail${list.length === 1 ? '' : 's'} jetzt wirklich senden?\n\n${zeilen}\n\nDas kann nicht rückgängig gemacht werden. Danach wird die Sicherung im Drive abgelegt.`)) return;
     S.entw.sending = true; render();
     for (const e of list) {
       e.sendState = 'run'; render();
@@ -1204,6 +1213,19 @@ a{color:var(--acc)}
       render();
     }
     S.entw.sending = false; S.entw.sent = S.entw.list.every((e) => e.sendState === 'ok'); render();
+    if (list.some((e) => e.sendState === 'ok')) await sicherungAblegen();
+  }
+
+  // Nach dem Senden: verschlüsselte Sicherung (mit «gesendet am …») im Drive-Hauptordner ablegen; ältere kommen in den Papierkorb.
+  async function sicherungAblegen() {
+    S.entw.sich = { state: 'run', msg: '' }; render();
+    try {
+      await save();
+      const t = new Date(); const tag = `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`;
+      const x = await scriptPost({ action: 'sicherung', name: `Sicherung Abrechnung ${tag}.json`, inhalt: localStorage.getItem(VAULT_KEY) });
+      S.entw.sich = { state: 'ok', msg: `${x.name} im Ordner «${x.ordner}»` + (x.ersetzt ? ` · ältere Sicherung${x.ersetzt === 1 ? '' : 'en'} im Papierkorb` : '') };
+    } catch (err) { S.entw.sich = { state: 'err', msg: err.message }; }
+    render();
   }
 
   const MARK = { ok: '✓', err: '✗', run: '…', skip: '–' };
@@ -1261,8 +1283,12 @@ a{color:var(--acc)}
       const offen = S.entw.list.filter((e) => e.sendState !== 'ok').length;
       if (S.entw.sent) out.append(h('p', { class: 'ok' }, isTest() ? 'Test abgeschlossen: Senden geprüft.' : 'Alle Lohnabrechnungen sind gesendet.'));
       else {
-        out.append(h('p', { class: 'muted small' }, 'Sendet die geprüften Entwürfe oben. Vorher kommt eine Rückfrage mit allen Empfängern. Gesendet wird nur an Adressen, die im Script erlaubt sind.'));
-        out.append(h('button', { class: 'btn', disabled: !!S.entw.sending, onclick: entwuerfeSenden }, S.entw.sending ? 'Sende …' : `Jetzt senden (${offen})`));
+        out.append(h('p', { class: 'muted small' }, 'Sendet die geprüften Entwürfe oben und legt danach die Sicherung im Drive ab. Vorher kommt eine Rückfrage mit allen Empfängern. Gesendet wird nur an Adressen, die im Script erlaubt sind.'));
+        out.append(h('button', { class: 'btn', disabled: !!(S.entw.sending || (S.entw.sich && S.entw.sich.state === 'run')), onclick: entwuerfeSenden }, S.entw.sending ? 'Sende …' : `Jetzt senden und sichern (${offen})`));
+      }
+      if (S.entw.sich) {
+        out.append(stepLine('Sicherung im Drive', S.entw.sich));
+        if (S.entw.sich.state === 'err') out.append(h('button', { class: 'btn sec', onclick: sicherungAblegen }, 'Sicherung nochmals ablegen'));
       }
     }
     return out;
@@ -1371,7 +1397,7 @@ a{color:var(--acc)}
       const pin = prompt('PIN der Sicherung eingeben:'); if (!pin) return;
       try { const b = JSON.parse(await f.text()); const key = await deriveKey(pin, unb64(b.salt), b.iter); const data = await decryptWith(key, b);
         if (!confirm('Alle aktuellen Daten durch die Sicherung ersetzen?')) return;
-        S.key = key; S.salt = unb64(b.salt); S.data = data; localStorage.setItem(VAULT_KEY, JSON.stringify(b)); S.tab = 'abr'; render();
+        dropSaves(); S.key = key; S.salt = unb64(b.salt); S.data = data; localStorage.setItem(VAULT_KEY, JSON.stringify(b)); S.tab = 'abr'; render();
       } catch (err) { alert('PIN falsch oder Datei beschädigt.'); }
     } });
     out.append(h('details', { class: 'card', open: !!S.secOpen, ontoggle: (e) => { S.secOpen = e.target.open; } }, h('summary', {}, 'Sicherheit'),
@@ -1397,7 +1423,7 @@ a{color:var(--acc)}
       } }, 'PIN ändern'),
       h('button', { class: 'btn sec', onclick: lock }, 'Jetzt sperren'),
       !d.persons.some((p) => p.id.startsWith('demo')) && !d.persons.length ? h('button', { class: 'btn sec', onclick: () => { loadDemo(d); saveSoon(); render(); } }, 'Erfundene Beispieldaten laden') : null,
-      h('button', { class: 'btn danger', onclick: () => { if (confirm('Wirklich ALLE Daten in diesem Gerät löschen? Das geht nur mit einer Sicherungsdatei rückgängig.') && confirm('Letzte Rückfrage: Alles löschen?')) { localStorage.removeItem(VAULT_KEY); lock(); } } }, 'Alle Daten löschen')));
+      h('button', { class: 'btn danger', onclick: () => { if (confirm('Wirklich ALLE Daten in diesem Gerät löschen? Das geht nur mit einer Sicherungsdatei rückgängig.') && confirm('Letzte Rückfrage: Alles löschen?')) { dropSaves(); localStorage.removeItem(VAULT_KEY); lock(); } } }, 'Alle Daten löschen')));
     return out;
   }
   function personForm(p) {
