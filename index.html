@@ -7,23 +7,34 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Abrechnung">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
-<meta name="theme-color" content="#4E8A5C">
+<meta name="theme-color" content="#F7F1E3">
 <meta name="robots" content="noindex, nofollow">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="icon-180.png">
 <title>Abrechnung</title>
 <style>
-:root{--acc:#4E8A5C;--accd:#3A6B46;--tint:#EAF4EC;--ink:#1B2126;--mut:#5A6570;--hair:#E3E6E8;--bg:#F4F7F5;--err:#B3261E;--warn:#8A5A00;--ok:#2F6B3F}
+:root{--acc:#8A4B2A;--accd:#28303A;--tint:#EFE6D2;--ink:#28303A;--mut:#667080;--hair:#E6DCC6;--bg:#F7F1E3;--surf:#FFFDF8;--err:#B3261E;--warn:#8A5A00;--ok:#2F6B3F;--go:#6F9A76;--gotag:#4F7F58;--gotint:#E7EFE1}
 *{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%}
 body{margin:0;background:var(--bg);color:var(--ink);font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:16px;line-height:1.4}
 #app{max-width:640px;margin:0 auto;padding:0 16px calc(84px + env(safe-area-inset-bottom))}
 header{padding:calc(14px + env(safe-area-inset-top)) 0 4px}
-h1{font-size:26px;margin:8px 0;color:var(--acc);letter-spacing:-.01em}
+h1{font-size:26px;margin:8px 0;color:var(--ink);letter-spacing:-.01em}
 h2{font-size:18px;margin:0 0 10px}
 h3{font-size:16px;margin:0}
-.card{background:#fff;border:1px solid var(--hair);border-radius:12px;padding:16px;margin:12px 0}
-.card.done{border-color:var(--acc);background:var(--tint)}
+.card{background:var(--surf);border:1px solid var(--hair);border-radius:12px;padding:16px;margin:12px 0}
+.card.done,.card.ready{border-color:var(--go);background:var(--gotint)}
+.tag.go{background:var(--gotag);color:#fff}
+.row.tags{gap:6px}
+details.card>summary{display:flex;justify-content:space-between;align-items:center;font-size:18px;font-weight:700;cursor:pointer;list-style:none;min-height:28px}
+details.card>summary::-webkit-details-marker{display:none}
+details.card>summary::after{content:"▾";color:var(--mut);transition:transform .15s}
+details.card[open]>summary::after{transform:rotate(180deg)}
+details.card[open]>summary{margin-bottom:10px}
+.center.mid{justify-content:center;min-height:calc(100vh - 84px);min-height:calc(100dvh - 84px - env(safe-area-inset-top));padding-top:calc(16px + env(safe-area-inset-top));padding-bottom:16px}
+.center.lock{text-align:center}
+.center.lock input{text-align:center;font-size:22px;letter-spacing:.3em}
+.center.lock h1{margin:0 0 4px}
 .center{max-width:420px;margin:0 auto;padding:calc(40px + env(safe-area-inset-top)) 0 40px;display:flex;flex-direction:column;gap:10px}
 .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 .row.between{justify-content:space-between}
@@ -32,11 +43,11 @@ h3{font-size:16px;margin:0}
 p{margin:6px 0}
 hr{border:0;border-top:1px solid var(--hair);width:100%;margin:10px 0}
 .hidden{display:none}
-input,select,textarea{font:inherit;font-size:16px;padding:10px 12px;border:1px solid #C9CFD3;border-radius:8px;background:#fff;color:var(--ink);width:100%;min-height:44px}
+input,select,textarea{font:inherit;font-size:16px;padding:10px 12px;border:1px solid #D8CDB5;border-radius:8px;background:var(--surf);color:var(--ink);width:100%;min-height:44px}
 input[type=checkbox]{width:22px;min-height:22px;height:22px;accent-color:var(--acc)}
 .btn{font:inherit;font-weight:600;min-height:46px;padding:10px 16px;border-radius:10px;border:1px solid var(--acc);background:var(--acc);color:#fff;cursor:pointer;width:100%;margin-top:8px}
-.btn.sec{background:#fff;color:var(--accd)}
-.btn.danger{background:#fff;color:var(--err);border-color:var(--err)}
+.btn.sec{background:var(--surf);color:var(--accd);border-color:var(--accd)}
+.btn.danger{background:var(--surf);color:var(--err);border-color:var(--err)}
 .btn.small{min-height:40px;padding:6px 12px;width:auto;margin-top:0;font-size:14px}
 .btn[disabled]{opacity:.45;cursor:not-allowed}
 .linkbtn{font:inherit;font-size:13px;background:none;border:0;color:var(--mut);text-decoration:underline;padding:10px 0 2px;margin-top:4px;cursor:pointer;display:block;width:100%;text-align:center}
@@ -53,7 +64,7 @@ label.chk{display:flex;gap:10px;align-items:center;font-size:15px;color:var(--in
 .tbl tfoot td{font-weight:700;border-top:1.5px solid var(--ink);border-bottom:0}
 .tbl .r,.tbl th.r{text-align:right}
 .scroll{overflow-x:auto;margin:0 -4px}
-.scroll .tbl:not(.compact) td:first-child,.scroll .tbl:not(.compact) th:first-child{position:sticky;left:0;background:#fff}
+.scroll .tbl:not(.compact) td:first-child,.scroll .tbl:not(.compact) th:first-child{position:sticky;left:0;background:var(--surf)}
 .tbl.compact{font-size:12.5px}
 .tbl.compact td,.tbl.compact th{padding:6px 3px}
 .tbl.compact td.wrap{white-space:normal}
@@ -67,17 +78,17 @@ label.chk{display:flex;gap:10px;align-items:center;font-size:15px;color:var(--in
 .file .row{flex:0 0 auto;flex-wrap:nowrap;margin-left:auto}
 .blockers{background:#FFF4E5;border:1px solid #F0C98B;border-radius:10px;padding:10px 12px;margin:10px 0;color:#5C3B00;font-size:14px}
 .blockers select{margin-top:6px}
-.pform{border:1px solid var(--hair);border-radius:10px;padding:8px 12px;margin:10px 0;background:#FBFCFB}
-nav{position:fixed;left:0;right:0;bottom:0;background:#fff;border-top:1px solid var(--hair);display:flex;justify-content:center;gap:0;padding-bottom:env(safe-area-inset-bottom)}
+.pform{border:1px solid var(--hair);border-radius:10px;padding:8px 12px;margin:10px 0;background:#FBF7EC}
+nav{position:fixed;left:0;right:0;bottom:0;background:var(--surf);border-top:1px solid var(--hair);display:flex;justify-content:center;gap:0;padding-bottom:env(safe-area-inset-bottom)}
 nav button{flex:1;max-width:214px;font:inherit;font-size:14px;font-weight:600;background:none;border:0;padding:14px 4px;color:var(--mut);cursor:pointer;min-height:52px}
 nav button.on{color:var(--accd);box-shadow:inset 0 3px 0 var(--acc)}
-a{color:var(--accd)}
+a{color:var(--acc)}
 .gblock{margin-top:16px;padding-top:12px;border-top:1px solid var(--acc)}
 .gblock h3{margin:10px 0 4px}.gblock h3.mt{margin-top:18px}.gblock p.mt{margin-top:14px;margin-bottom:0}
 .step{display:flex;gap:10px;align-items:flex-start;padding:6px 0;font-size:14px}
 .step .mk{flex:0 0 18px;font-weight:700;color:var(--mut)}
 .step.ok .mk{color:var(--ok)}.step.err .mk{color:var(--err)}
-.mail{background:#fff;border:1px solid var(--hair);border-radius:10px;padding:10px 12px;margin:8px 0}
+.mail{background:var(--surf);border:1px solid var(--hair);border-radius:10px;padding:10px 12px;margin:8px 0}
 .mail pre{white-space:pre-wrap;font:inherit;font-size:14px;margin:8px 0;padding:8px;background:var(--bg);border-radius:8px}
 </style>
 </head>
@@ -743,7 +754,7 @@ a{color:var(--accd)}
       S.salt = crypto.getRandomValues(new Uint8Array(16)); S.key = await deriveKey(pin1.value, S.salt, ITER);
       S.data = emptyData(); if (demo) loadDemo(S.data); await save(); S.tab = demo ? 'abr' : 'set'; render();
     };
-    return h('div', { class: 'center' },
+    return h('div', { class: 'center mid' },
       h('h1', {}, 'Abrechnung'),
       h('p', { class: 'muted' }, 'Erster Start. Lege eine PIN fest. Alle Angaben bleiben verschlüsselt in diesem Gerät. Merke dir die PIN gut: Ohne PIN lassen sich die Daten nur mit einer Sicherungsdatei wiederherstellen.'),
       pin1, pin2, err,
@@ -765,8 +776,8 @@ a{color:var(--accd)}
       } catch (e) { err.textContent = 'PIN falsch.'; pin.value = ''; }
     };
     pin.addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
-    return h('div', { class: 'center' }, h('h1', {}, 'Abrechnung'), h('p', { class: 'muted' }, 'Gesperrt'), pin, err, h('button', { class: 'btn', onclick: go }, 'Entsperren'),
-      h('p', { class: 'muted small' }, 'PIN vergessen? Dann nur mit einer Sicherungsdatei: Daten löschen und beim Start die Sicherung laden. ', h('a', { href: '#', onclick: (e) => { e.preventDefault(); if (confirm('Wirklich ALLE Daten in diesem Gerät löschen? Das geht nur mit einer Sicherungsdatei rückgängig.')) { localStorage.removeItem(VAULT_KEY); render(); } } }, 'Alle Daten löschen')));
+    return h('div', { class: 'center mid lock' }, h('h1', {}, 'Abrechnung'), h('p', { class: 'muted' }, 'Gesperrt'), pin, err, h('button', { class: 'btn', onclick: go }, 'Entsperren'),
+      h('p', { class: 'muted small' }, 'PIN vergessen? Dann nur mit einer Sicherungsdatei: Daten löschen und beim Start die Sicherung laden. ', h('a', { href: '#', onclick: (e) => { e.preventDefault(); if (confirm('Wirklich ALLE Daten in diesem Gerät löschen? Das geht nur mit einer Sicherungsdatei rückgängig.') && confirm('Letzte Rückfrage: Alles löschen?')) { localStorage.removeItem(VAULT_KEY); render(); } } }, 'Alle Daten löschen')));
   }
 
   /* ---------- Beispieldaten (erfunden) ---------- */
@@ -998,8 +1009,12 @@ a{color:var(--accd)}
     const isOpen = !!S.open[p.id];
     const touch = () => { if (!p.pauschal) { if (!dr.manual) dr.manual = {}; dr.manual[p.id] = true; } };
     const openEdit = () => { S.open[p.id] = true; };
-    const card = h('div', { class: 'card' },
-      h('div', { class: 'row between' }, h('h3', {}, p.kurzname), h('span', { class: 'tag' }, p.ahvAbzug ? 'mit AHV-Abzug' : 'ohne AHV-Abzug')));
+    const pendR = !!(dr.pending && dr.pending[p.id] != null && !p.pauschal);
+    const pOk = !p.pauschal || (dr.pTotal[p.id] != null && Math.round(dr.pTotal[p.id] * 100) === r.hc);
+    const ready = r.state === 'ok' && pOk && !(r.calc && r.calc.excess && !dr.excess[p.id]) && !(pendR && !days.length);
+    const card = h('div', { class: 'card' + (ready ? ' ready' : '') },
+      h('div', { class: 'row between' }, h('h3', {}, p.kurzname),
+        h('span', { class: 'row tags' }, ready || r.state === 'skip' ? h('span', { class: 'tag' + (ready ? ' go' : '') }, '✓ bereit') : null, h('span', { class: 'tag' }, p.ahvAbzug ? 'mit AHV-Abzug' : 'ohne AHV-Abzug'))));
     if (r.state === 'skip') {
       card.append(h('p', { class: 'muted' }, 'Hat in diesem Monat nicht gearbeitet – es wird eine Lohnabrechnung mit 0.00 erstellt (ohne Stundenübersicht).'),
         h('button', { class: 'btn sec', onclick: () => { delete dr.skip[p.id]; saveSoon(); render(); } }, 'Rückgängig'));
@@ -1341,9 +1356,6 @@ a{color:var(--accd)}
     const num = (k, label) => field(label, d.settings[k], (v) => { const n = Number(String(v).replace(',', '.')); if (isFinite(n) && n >= 0) d.settings[k] = n; }, { inputmode: 'decimal' });
     out.append(h('div', { class: 'card' }, h('h2', {}, 'Sätze'), num('stundenlohn', 'Stundenlohn (CHF)'), num('ferien', 'Ferienentschädigung (%)'), num('ahv', 'AHV/IV/EO (%)'), num('freibetrag', 'Freibetrag pro Monat ohne AHV-Abzug (CHF)'),
       h('p', { class: 'muted small' }, 'ALV, BVG, NBU, Krankentaggeld und Quellensteuer sind fest auf 0.')));
-    out.append(h('div', { class: 'card' }, h('h2', {}, 'Abruf Stundenerfassung'),
-      field('Abruf-Schlüssel', d.settings.abrufKey || '', (v) => { d.settings.abrufKey = v; }, { type: 'password', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false' }),
-      h('p', { class: 'muted small' }, 'Damit holt „Stunden holen“ die Stunden direkt aus der Tabelle. Der Schlüssel bleibt verschlüsselt im Gerät und in der Sicherung.')));
     // Personen
     const pc = h('div', { class: 'card' }, h('h2', {}, 'Assistenzpersonen'));
     d.persons.forEach((p) => {
@@ -1362,7 +1374,12 @@ a{color:var(--accd)}
         S.key = key; S.salt = unb64(b.salt); S.data = data; localStorage.setItem(VAULT_KEY, JSON.stringify(b)); S.tab = 'abr'; render();
       } catch (err) { alert('PIN falsch oder Datei beschädigt.'); }
     } });
-    out.append(h('div', { class: 'card' }, h('h2', {}, 'Sicherung und PIN'),
+    out.append(h('details', { class: 'card', open: !!S.secOpen, ontoggle: (e) => { S.secOpen = e.target.open; } }, h('summary', {}, 'Sicherheit'),
+      h('h3', {}, 'Abruf-Schlüssel'),
+      field('Abruf-Schlüssel', d.settings.abrufKey || '', (v) => { d.settings.abrufKey = v; }, { type: 'password', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false' }),
+      h('p', { class: 'muted small' }, 'Damit holt „Stunden holen“ die Stunden direkt aus der Tabelle. Der Schlüssel bleibt verschlüsselt im Gerät und in der Sicherung.'),
+      h('hr'),
+      h('h3', {}, 'Sicherung und PIN'),
       h('p', { class: 'muted small' }, 'Die Sicherungsdatei ist mit deiner PIN verschlüsselt. Lege sie z. B. im Google-Drive-Ordner ab.'),
       h('button', { class: 'btn', onclick: async () => {
         await save(); const text = localStorage.getItem(VAULT_KEY); const name = `Sicherung Abrechnung ${new Date().toISOString().slice(0, 10)}.json`;
