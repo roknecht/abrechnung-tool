@@ -979,11 +979,6 @@ details.mailprev pre{white-space:pre-wrap;font:inherit;font-size:14px;margin:8px
     } catch (e) { alert('Fehler beim Erstellen der Dokumente: ' + e.message); }
     S.busy = false; render();
   }
-  async function shareFiles(list) {
-    const files = list.map((f) => new File([f.blob], f.name, { type: 'application/pdf' }));
-    if (navigator.canShare && navigator.canShare({ files })) { try { await navigator.share({ files }); return; } catch (e) { if (e.name === 'AbortError') return; } }
-    list.forEach((f) => { const a = h('a', { href: URL.createObjectURL(f.blob), download: f.name }); document.body.append(a); a.click(); a.remove(); });
-  }
   const openBlob = (f) => window.open(URL.createObjectURL(f.blob), '_blank');
 
   /* ---------- Ansicht: Abrechnung ---------- */
@@ -1091,7 +1086,7 @@ details.mailprev pre{white-space:pre-wrap;font:inherit;font-size:14px;margin:8px
       return card;
     }
     if (korr) {
-      card.append(h('div', { class: 'korrbox' }, h('p', {}, `Korrektur (gesendet am ${sentOf(dr.key)[p.id]}): Stunden ändern, dann «Dokumente erstellen» und «Ablegen, senden und sichern». ${p.vorname || p.kurzname} erhält die korrigierte Abrechnung (Betreff mit «(korrigiert)»).`),
+      card.append(h('div', { class: 'korrbox' }, h('p', {}, `Korrektur (gesendet am ${sentOf(dr.key)[p.id]}): Stunden ändern, dann «Dokumente erstellen» und «Senden, ablegen und sichern». ${p.vorname || p.kurzname} erhält die korrigierte Abrechnung (Betreff mit «(korrigiert)»).`),
         h('button', { class: 'btn sec small', onclick: () => {
           const k = dr.korr[p.id]; dr.days[p.id] = k.days || [];
           if (k.skip) dr.skip[p.id] = true; else delete dr.skip[p.id];
@@ -1110,7 +1105,7 @@ details.mailprev pre{white-space:pre-wrap;font:inherit;font-size:14px;margin:8px
     const startEntry = () => { if (!p.pauschal) { days.push({ date: mdays.find((x) => !used.has(x)) || mdays[0], hc: 0 }); touch(); } delete dr.later[p.id]; openEdit(); saveSoon(); render(); };
     if (later) {
       card.append(h('p', {}, 'Die Stunden werden später nachgetragen. Für diese Person entstehen jetzt keine Dokumente und keine E-Mail; in der Jahresübersicht bleibt der Monat leer.'),
-        h('p', { class: 'small' }, pend ? 'Sobald die Person den Monat abgeschickt hat: «Stunden holen», dann «Dokumente erstellen» und «Ablegen, senden und sichern» – nur für sie.' : 'Später die Stunden eintragen, dann «Dokumente erstellen» und «Ablegen, senden und sichern» – nur für sie.'),
+        h('p', { class: 'small' }, pend ? 'Sobald die Person den Monat abgeschickt hat: «Stunden holen», dann «Dokumente erstellen» und «Senden, ablegen und sichern» – nur für sie.' : 'Später die Stunden eintragen, dann «Dokumente erstellen» und «Senden, ablegen und sichern» – nur für sie.'),
         h('div', { class: 'row' }, h('button', { class: 'btn', onclick: startEntry }, pend ? 'Manuell eintragen' : 'Stunden eintragen'),
           h('button', { class: 'btn sec', onclick: () => { delete dr.later[p.id]; saveSoon(); render(); } }, 'Rückgängig')));
       return card;
@@ -1173,9 +1168,9 @@ details.mailprev pre{white-space:pre-wrap;font:inherit;font-size:14px;margin:8px
   function resultCard() {
     const r = S.result; const files = r.files; const mails = mailsFor(r);
     const out = h('div', { class: 'card done' }, h('h2', {}, 'Dokumente erstellt'),
-      h('p', { class: 'muted small' }, 'Bitte prüfen: «Ansehen» öffnet das PDF, «E-Mail-Vorschau» zeigt die E-Mail. Die Dateien liegen erst in diesem Gerät. „Speichern/Teilen“ öffnet das iPhone-Menü.'));
+      h('p', { class: 'muted small' }, 'Bitte prüfen: «Ansehen» öffnet das PDF, «E-Mail-Vorschau» zeigt die E-Mail. Die Dateien liegen erst in diesem Gerät.'));
     const fileRow = (f) => h('div', { class: 'file' }, h('span', {}, f.name),
-      h('div', { class: 'row' }, h('button', { class: 'btn sec small', onclick: () => openBlob(f) }, 'Ansehen'), h('button', { class: 'btn small', onclick: () => shareFiles([f]) }, 'Speichern/Teilen')));
+      h('div', { class: 'row' }, h('button', { class: 'btn sec small', onclick: () => openBlob(f) }, 'Ansehen')));
     mails.forEach((e) => {
       const p = S.data.persons.find((x) => x.id === e.pid);
       out.append(h('div', { class: 'pblock' }, h('div', { class: 'row between' }, h('h3', {}, p.kurzname), e.korr ? h('span', { class: 'tag korr' }, 'Korrektur') : null),
@@ -1187,7 +1182,7 @@ details.mailprev pre{white-space:pre-wrap;font:inherit;font-size:14px;margin:8px
           h('div', { class: 'small muted' }, 'Anhänge: ' + files.filter((f) => f.pid === e.pid).map((f) => f.name).join(', ')))));
     });
     files.filter((f) => f.pid === null).forEach((f) => out.append(h('div', { class: 'pblock' }, h('h3', {}, 'Jahresübersicht'), fileRow(f))));
-    out.append(h('button', { class: 'linkbtn', onclick: () => shareFiles(files) }, 'Alle Dateien speichern/teilen'), googleBlock(r, mails));
+    out.append(googleBlock(r, mails));
     return out;
   }
 
@@ -1325,7 +1320,7 @@ details.mailprev pre{white-space:pre-wrap;font:inherit;font-size:14px;margin:8px
   const stepLine = (label, st) => h('div', { class: 'step ' + (st.state || '') }, h('span', { class: 'mk' }, MARK[st.state] || '○'), h('span', {}, label, st.msg ? h('div', { class: 'small ' + (st.state === 'err' ? 'err' : 'muted') }, st.msg) : null));
 
   function googleBlock(r, mails) {
-    const out = h('div', { class: 'gblock' }, h('h2', {}, 'Ablegen, senden und sichern'));
+    const out = h('div', { class: 'gblock' }, h('h2', {}, 'Senden, ablegen und sichern'));
     if (isTest()) out.append(h('p', { class: 'tag' }, 'Testmodus (erfundene Daten): nur Ordner „_TEST Beispieldaten“, nur Adressen @example.com'));
     const offen = mails.filter((e) => !e.done); const run = S.run;
     const busy = !!(run && (run.running || (run.sich && run.sich.state === 'run')));
@@ -1339,7 +1334,7 @@ details.mailprev pre{white-space:pre-wrap;font:inherit;font-size:14px;margin:8px
       if (!run) out.append(h('p', { class: 'muted small' }, 'Legt alles im Drive ab (PDFs, Google Tabelle und PDF der Jahresübersicht; alte Versionen in den Papierkorb), sendet die E-Mails (CC an den Arbeitgeber) und legt danach die Sicherung im Drive ab. Vorher kommt eine Rückfrage mit allen Empfängern. Klappt ein Schritt nicht, wird nichts gesendet.'));
       if (probs.length) out.append(h('div', { class: 'blockers' }, probs.map((x) => h('p', {}, x))));
       out.append(h('button', { class: 'btn', disabled: !!(busy || probs.length), onclick: ablegenSendenSichern },
-        run && run.running ? 'Läuft …' : `${run && run.err ? 'Nochmals versuchen' : 'Ablegen, senden und sichern'} (${offen.length})`));
+        run && run.running ? 'Läuft …' : `${run && run.err ? 'Nochmals versuchen' : 'Senden, ablegen und sichern'} (${offen.length})`));
     } else if (!run) out.append(h('p', { class: 'ok' }, 'Diese Abrechnungen sind schon gesendet.'));
     // Fortschritt
     if (run) {
@@ -1426,7 +1421,7 @@ details.mailprev pre{white-space:pre-wrap;font:inherit;font-size:14px;margin:8px
         const bytes = await P.jahresuebersicht(window.PDFLib, { employer: d.employer, persons: d.persons, year, months: d.months });
         S.lastYearFile = { name: `Jahresübersicht Löhne Assistenz ${year}.pdf`, year, blob: new Blob([bytes], { type: 'application/pdf' }) }; render();
       } }, 'PDF erstellen'),
-      S.lastYearFile && S.lastYearFile.year === year ? h('div', { class: 'row' }, h('button', { class: 'btn sec', onclick: () => openBlob(S.lastYearFile) }, 'Ansehen'), h('button', { class: 'btn sec', onclick: () => shareFiles([S.lastYearFile]) }, 'Speichern/Teilen')) : null,
+      S.lastYearFile && S.lastYearFile.year === year ? h('div', { class: 'row' }, h('button', { class: 'btn sec', onclick: () => openBlob(S.lastYearFile) }, 'Ansehen')) : null,
       h('p', { class: 'muted small' }, 'Wenn ein Monat falsch erfasst wurde, in „Abrechnung“ denselben Monat neu erstellen: Der Eintrag wird ersetzt.')),
       importBlock(year));
   }
