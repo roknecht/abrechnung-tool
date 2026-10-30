@@ -88,6 +88,13 @@ a{color:var(--acc)}
 .step{display:flex;gap:10px;align-items:flex-start;padding:6px 0;font-size:14px}
 .step .mk{flex:0 0 18px;font-weight:700;color:var(--mut)}
 .step.ok .mk{color:var(--ok)}.step.err .mk{color:var(--err)}
+.card.later{background:#FBE1C8;border:2px solid #D9772B}.card.later p{color:#5A2E0A}
+.tag.later{background:#C8641E;color:#fff}.tag.korr{background:var(--warn);color:#fff}
+.korrbox{background:#FFF4E5;border:1px solid #F0C98B;border-radius:10px;padding:8px 12px;margin:10px 0;color:#5C3B00;font-size:14px}.korrbox p{margin:0 0 4px}
+.pblock{border-top:1px solid var(--hair);padding-top:6px;margin-top:10px}.pblock h3{margin:6px 0 0}
+details.mailprev{background:var(--surf);border:1px solid var(--hair);border-radius:10px;padding:8px 12px;margin:8px 0}
+details.mailprev>summary{cursor:pointer;font-size:14px;font-weight:600;color:var(--accd);min-height:28px;display:flex;align-items:center}
+details.mailprev pre{white-space:pre-wrap;font:inherit;font-size:14px;margin:8px 0;padding:8px;background:var(--bg);border-radius:8px}
 .mail{background:var(--surf);border:1px solid var(--hair);border-radius:10px;padding:10px 12px;margin:8px 0}
 .mail pre{white-space:pre-wrap;font:inherit;font-size:14px;margin:8px 0;padding:8px;background:var(--bg);border-radius:8px}
 </style>
@@ -814,12 +821,18 @@ a{color:var(--acc)}
   function prevMonth() { const t = new Date(); let y = t.getFullYear(); let m = t.getMonth(); if (m === 0) { m = 12; y--; } return { y, m }; }
   function ensureDraft() {
     const d = S.data;
-    if (!d.draft) { const { y, m } = prevMonth(); d.draft = { key: C.monthKey(y, m), days: {}, csvHc: {}, skip: {}, excess: {}, pTotal: {}, pending: {}, manual: {}, info: null }; }
+    if (!d.draft) { const { y, m } = prevMonth(); d.draft = { key: C.monthKey(y, m), days: {}, csvHc: {}, skip: {}, excess: {}, pTotal: {}, pending: {}, manual: {}, later: {}, korr: {}, info: null }; }
+    // later: «Später nachtragen» (keine Dokumente, keine E-Mail, in der Jahresübersicht leer)
+    // korr: Korrektur einer schon gesendeten Abrechnung (mit dem Stand vor der Korrektur zum Abbrechen)
+    if (!d.draft.later) d.draft.later = {};
+    if (!d.draft.korr) d.draft.korr = {};
     return d.draft;
   }
   const keyYM = (k) => ({ y: Number(k.slice(0, 4)), m: Number(k.slice(5)) });
   const dayHc = (dr, id) => (dr.days[id] || []).reduce((a, q) => a + q.hc, 0);
-  function resetDraft(key) { S.data.draft = { key, days: {}, csvHc: {}, skip: {}, excess: {}, pTotal: {}, pending: {}, manual: {}, info: null }; S.result = null; saveSoon(); }
+  function resetDraft(key) { S.data.draft = { key, days: {}, csvHc: {}, skip: {}, excess: {}, pTotal: {}, pending: {}, manual: {}, later: {}, korr: {}, info: null }; S.result = null; S.run = null; S.ablage = null; saveSoon(); }
+  // Schon gesendet und nicht in Korrektur: Diese Person ist für den Monat erledigt.
+  const sentLocked = (dr, pid) => !!sentOf(dr.key)[pid] && !dr.korr[pid];
 
   function applyCsv(text, filename) {
     const dr = ensureDraft(); const { y, m } = keyYM(dr.key); const d = S.data;
@@ -866,6 +879,10 @@ a{color:var(--acc)}
       const a = absOf(ab, p); const sub = !!a && a.status === 'abgeschickt';
       const oldDays = old.days[p.id] || []; const oldHc = oldDays.reduce((x, q) => x + q.hc, 0);
       const newHc = dayHc(dr, p.id);
+      // Schon gesendet (ohne Korrektur): Stand in der App bleibt, keine Rückfrage.
+      if (sentLocked(dr, p.id)) { if (oldDays.length) keepOld(p); if (old.skip[p.id]) dr.skip[p.id] = true; return; }
+      // «Später nachtragen»: Sobald die Person abgeschickt hat, kommen die Stunden normal herein.
+      if (sub && dr.later[p.id]) delete dr.later[p.id];
       if (!sub) {
         dr.pending[p.id] = newHc;
         if (old.manual[p.id] && oldDays.length) { keepOld(p); delete dr.csvHc[p.id]; }
@@ -888,7 +905,7 @@ a{color:var(--acc)}
   function abschlussNotes(dr) {
     const ab = dr.info && dr.info.abschluss; if (!ab) return [];
     const out = [];
-    S.data.persons.filter((p) => !p.pauschal && !dr.skip[p.id]).forEach((p) => {
+    S.data.persons.filter((p) => !p.pauschal && !dr.skip[p.id] && !sentLocked(dr, p.id)).forEach((p) => {
       const a = absOf(ab, p);
       const hc = dayHc(dr, p.id); const pend = (dr.pending || {})[p.id];
       if (!a || a.status !== 'abgeschickt') out.push(`${p.kurzname}: hat den Monat noch nicht abgeschickt${a && a.status === 'offen' ? ' (wieder zum Bearbeiten geöffnet)' : ''}${hc > 0 ? ' – in der App stehen deine manuell eingetragenen Stunden' : (pend > 0 ? ` – ${C.fmtHc(pend)} h eingetragen, aber noch nicht übernommen` : '')}.`);
@@ -900,11 +917,16 @@ a{color:var(--acc)}
   /* ---------- Berechnung für die Kontrolle ---------- */
   function evaluate() {
     const d = S.data; const dr = ensureDraft(); const rows = []; const blockers = [];
+    const g = sentOf(dr.key); const kg = korrOf(dr.key); const rec0 = d.months[dr.key];
     d.persons.forEach((p) => {
       const days = dr.days[p.id] || []; const hc = dayHc(dr, p.id); const skip = !!dr.skip[p.id];
       const r = { p, days, hc, skip };
+      // Schon gesendet: erledigt, Werte aus der erstellten Abrechnung. Ändern nur über «Korrektur».
+      if (g[p.id] && !dr.korr[p.id]) { r.state = 'sent'; r.sentAt = g[p.id]; r.korrAt = kg[p.id] || null; r.rec = (rec0 && rec0.persons && rec0.persons[p.id]) || null; rows.push(r); return; }
       // Nicht gearbeitet: Lohnabrechnung mit 0.00 (ohne Stundenübersicht), Monat in der Jahresübersicht mit 0.00
       if (skip) { r.state = 'skip'; r.calc = C.calcPerson(p, 0, d.settings, {}); rows.push(r); return; }
+      // Später nachtragen: keine Dokumente, keine E-Mail, in der Jahresübersicht leer
+      if (dr.later[p.id] && !days.length) { r.state = 'later'; rows.push(r); return; }
       if (!p.pauschal && dr.pending && dr.pending[p.id] != null && !days.length) { r.state = 'pending'; blockers.push(`${p.kurzname}: hat den Monat noch nicht abgeschickt – später nochmals «Stunden holen».`); rows.push(r); return; }
       if (hc <= 0) { r.state = 'missing'; blockers.push(`${p.kurzname}: keine Stunden erfasst – bitte entscheiden.`); rows.push(r); return; }
       if (p.pauschal) {
@@ -915,19 +937,26 @@ a{color:var(--acc)}
       if (r.calc.excess && !dr.excess[p.id]) blockers.push(`${p.kurzname}: AHV-Lohn über CHF ${C.fmtMoney(C.toCents(d.settings.freibetrag))} – bitte Vorgehen wählen.`);
       r.state = 'ok'; rows.push(r);
     });
-    return { rows, blockers, totalHc: rows.reduce((a, r) => a + (r.state === 'ok' ? r.hc : 0), 0) };
+    const targets = rows.filter((r) => r.state === 'ok' || r.state === 'skip');
+    return { rows, blockers, targets, totalHc: rows.reduce((a, r) => a + (r.state === 'ok' ? r.hc : (r.state === 'sent' && r.rec ? r.rec.hc || 0 : 0)), 0) };
   }
 
   /* ---------- Dokumente erstellen ---------- */
   async function createDocs() {
     const d = S.data; const dr = ensureDraft(); const ev = evaluate(); const { y, m } = keyYM(dr.key);
-    if (ev.blockers.length) return;
-    const sn = sentNames(dr.key);
-    if (d.months[dr.key] && !confirm('Für diesen Monat wurden schon Dokumente erstellt. Neu erstellen und den Eintrag in der Jahresübersicht ersetzen?' + (sn.length ? `\n\nAchtung: Bereits gesendet an ${sn.join(', ')}. Diese Personen erhalten aus der App keine neue E-Mail; eine Korrektur bitte selbst in Gmail senden (Betreff mit «(korrigiert)»).` : ''))) return;
+    if (ev.blockers.length || !ev.targets.length) return;
+    const old = d.months[dr.key] && !d.months[dr.key].imported ? d.months[dr.key] : null;
+    const korrT = ev.targets.filter((r) => dr.korr[r.p.id]);
+    const ask = [];
+    if (old && ev.targets.some((r) => !dr.korr[r.p.id] && old.persons && old.persons[r.p.id])) ask.push('Für diesen Monat wurden schon Dokumente erstellt. Neu erstellen und den Eintrag in der Jahresübersicht ersetzen?');
+    if (korrT.length) ask.push(`Korrektur für ${korrT.map((r) => r.p.kurzname).join(', ')}: Die neuen Dokumente ersetzen beim Ablegen die gesendeten im Drive. Die Person erhält eine E-Mail mit «(korrigiert)» im Betreff.`);
+    if (ask.length && !confirm(ask.join('\n\n'))) return;
     S.busy = true; render();
     try {
-      const files = []; const rec = { created: new Date().toISOString(), persons: {} };
-      for (const r of ev.rows) {
+      // Gesendete Personen behalten ihren Eintrag; «Später nachtragen» bleibt in der Jahresübersicht leer.
+      const files = []; const rec = { created: new Date().toISOString(), persons: old ? Object.assign({}, old.persons) : {} };
+      ev.rows.filter((r) => r.state === 'later').forEach((r) => { delete rec.persons[r.p.id]; });
+      for (const r of ev.targets) {
         if (r.state === 'skip') {
           const lohn0 = await P.lohnabrechnung(window.PDFLib, { employer: d.employer, person: r.p, y, m, calc: r.calc, settings: d.settings });
           files.push({ name: `${dr.key} Lohnabrechnung ${r.p.kurzname}.pdf`, bytes: lohn0, person: r.p.kurzname, pid: r.p.id });
@@ -946,7 +975,7 @@ a{color:var(--acc)}
       const jb = await P.jahresuebersicht(window.PDFLib, { employer: d.employer, persons: d.persons, year: y, months: d.months });
       files.push({ name: `Jahresübersicht Löhne Assistenz ${y}.pdf`, bytes: jb, person: 'Jahresübersicht', pid: null });
       S.result = { key: dr.key, year: y, files: files.map((f) => ({ name: f.name, person: f.person, pid: f.pid, blob: new Blob([f.bytes], { type: 'application/pdf' }) })) };
-      S.ablage = null; S.entw = null; S.kombi = null;
+      S.ablage = null; S.run = null;
     } catch (e) { alert('Fehler beim Erstellen der Dokumente: ' + e.message); }
     S.busy = false; render();
   }
@@ -986,19 +1015,37 @@ a{color:var(--acc)}
 
     // Kontrolle
     const tbl = h('table', { class: 'tbl compact' }, h('thead', {}, h('tr', {}, ['Person', 'Std.', 'Brutto', 'AHV', 'Netto'].map((t, i) => h('th', { class: i ? 'r' : '' }, t)))),
-      h('tbody', {}, ev.rows.map((r) => h('tr', {}, h('td', { class: 'wrap' }, r.p.kurzname, r.state === 'skip' ? h('div', { class: 'muted small' }, 'nicht gearbeitet') : null), h('td', { class: 'r' }, r.state === 'ok' ? C.fmtHc(r.hc) : (r.state === 'skip' ? '0.00' : (r.state === 'pending' ? 'offen' : '?'))),
-        h('td', { class: 'r' }, r.calc ? C.fmtMoney(r.calc.bruttoC) : ''), h('td', { class: 'r' }, r.calc ? C.fmtMoney(r.calc.ahvC) : ''), h('td', { class: 'r' }, r.calc ? C.fmtMoney(r.calc.nettoC) : '')))),
-      h('tfoot', {}, h('tr', {}, h('td', { class: 'wrap' }, 'Total aller Personen'), h('td', { class: 'r' }, C.fmtHc(ev.totalHc)), h('td', {}), h('td', {}), h('td', { class: 'r' }, C.fmtMoney(ev.rows.reduce((a, r) => a + (r.calc ? r.calc.nettoC : 0), 0))))));
+      h('tbody', {}, ev.rows.map((r) => { const v = rowVals(r); return h('tr', {}, h('td', { class: 'wrap' }, r.p.kurzname, v.note ? h('div', { class: 'muted small' }, v.note) : null), h('td', { class: 'r' }, v.std),
+        h('td', { class: 'r' }, v.b != null ? C.fmtMoney(v.b) : ''), h('td', { class: 'r' }, v.a != null ? C.fmtMoney(v.a) : ''), h('td', { class: 'r' }, v.n != null ? C.fmtMoney(v.n) : '')); })),
+      h('tfoot', {}, h('tr', {}, h('td', { class: 'wrap' }, 'Total aller Personen'), h('td', { class: 'r' }, C.fmtHc(ev.totalHc)), h('td', {}), h('td', {}), h('td', { class: 'r' }, C.fmtMoney(ev.rows.reduce((a, r) => a + (rowVals(r).n || 0), 0))))));
     const csvDiff = ev.rows.filter((r) => !r.p.pauschal && r.state === 'ok' && dr.csvHc[r.p.id] != null && dr.info && !dr.info.errors.length && dr.csvHc[r.p.id] !== r.hc);
     wrap.append(h('div', { class: 'card' }, h('h2', {}, 'Kontrolle'), h('div', { class: 'scroll' }, tbl),
       csvDiff.map((r) => h('p', { class: 'warn' }, `${r.p.kurzname}: Stunden von Hand geändert (CSV: ${C.fmtHc(dr.csvHc[r.p.id])}, jetzt: ${C.fmtHc(r.hc)}).`)),
-      ev.blockers.length ? h('div', { class: 'blockers' }, h('strong', {}, 'Noch offen:'), ev.blockers.map((b) => h('p', {}, b))) : h('p', { class: 'ok' }, 'Alles geprüft. Die Dokumente können erstellt werden.'),
-      h('button', { class: 'btn', disabled: !!ev.blockers.length || S.busy, onclick: createDocs }, S.busy ? 'Erstelle …' : 'Dokumente erstellen')));
+      ev.blockers.length ? h('div', { class: 'blockers' }, h('strong', {}, 'Noch offen:'), ev.blockers.map((b) => h('p', {}, b))) : docsHint(ev),
+      h('button', { class: 'btn', disabled: !!ev.blockers.length || !ev.targets.length || S.busy, onclick: createDocs }, S.busy ? 'Erstelle …' : 'Dokumente erstellen')));
 
     if (S.result && S.result.key === dr.key) wrap.append(resultCard());
     return wrap;
   }
-  const hasDraftData = (dr) => Object.values(dr.days).some((a) => a.length) || Object.keys(dr.skip).length;
+  const hasDraftData = (dr) => Object.values(dr.days).some((a) => a.length) || Object.keys(dr.skip).length || Object.keys(dr.later || {}).length || Object.keys(dr.korr || {}).length;
+  /* Werte einer Zeile in der Kontrolle (gesendete Personen: aus der erstellten Abrechnung) */
+  function rowVals(r) {
+    if (r.state === 'sent') { const x = r.rec; if (!x) return { std: '✓', note: 'gesendet' }; return { std: C.fmtHc(x.hc || 0), b: x.bruttoC, n: x.nettoC, a: x.bruttoC - x.nettoC, note: x.nichtGearbeitet ? 'gesendet · nicht gearbeitet' : 'gesendet' }; }
+    if (r.state === 'later') return { std: 'später', note: 'später nachtragen' };
+    const c = r.calc;
+    return { std: r.state === 'ok' ? C.fmtHc(r.hc) : (r.state === 'skip' ? '0.00' : (r.state === 'pending' ? 'offen' : '?')), b: c ? c.bruttoC : null, a: c ? c.ahvC : null, n: c ? c.nettoC : null,
+      note: r.state === 'skip' ? 'nicht gearbeitet' : (ensureDraft().korr[r.p.id] ? 'Korrektur' : '') };
+  }
+  /* Hinweis über dem Button «Dokumente erstellen»: für wen entstehen Dokumente? */
+  function docsHint(ev) {
+    const later = ev.rows.filter((r) => r.state === 'later').map((r) => r.p.kurzname);
+    const sent = ev.rows.filter((r) => r.state === 'sent');
+    const out = [];
+    if (!ev.targets.length) out.push(h('p', { class: 'ok' }, sent.length ? 'Für diesen Monat ist alles gesendet. Für eine Änderung bei der Person «Korrektur» wählen.' : 'Für diesen Monat gibt es noch nichts zu erstellen.'));
+    else out.push(h('p', { class: 'ok' }, 'Alles geprüft. Die Dokumente können erstellt werden' + (sent.length || later.length ? ' für: ' + ev.targets.map((r) => r.p.kurzname + (ensureDraft().korr[r.p.id] ? ' (Korrektur)' : '')).join(', ') : '') + '.'));
+    if (later.length) out.push(h('p', { class: 'warn small' }, `Später nachtragen: ${later.join(', ')} – keine Dokumente, keine E-Mail, in der Jahresübersicht leer.`));
+    return h('div', {}, out);
+  }
 
   function infoBlock(dr) {
     const i = dr.info; if (!i) return null;
@@ -1015,23 +1062,59 @@ a{color:var(--acc)}
     const p = r.p; const days = dr.days[p.id] || (dr.days[p.id] = []);
     const used = new Set(days.map((q) => q.date)); const mdays = C.monthDays(y, m);
     if (!S.open) S.open = {};
+    // Letzte Zeile gelöscht: wieder die Auswahl zeigen (eintragen, nicht gearbeitet, später nachtragen)
+    if (!p.pauschal && !days.length) delete S.open[p.id];
     const isOpen = !!S.open[p.id];
     const touch = () => { if (!p.pauschal) { if (!dr.manual) dr.manual = {}; dr.manual[p.id] = true; } };
     const openEdit = () => { S.open[p.id] = true; };
     const pendR = !!(dr.pending && dr.pending[p.id] != null && !p.pauschal);
     const pOk = !p.pauschal || (dr.pTotal[p.id] != null && Math.round(dr.pTotal[p.id] * 100) === r.hc);
     const ready = r.state === 'ok' && pOk && !(r.calc && r.calc.excess && !dr.excess[p.id]) && !(pendR && !days.length);
-    const card = h('div', { class: 'card' + (ready ? ' ready' : '') },
+    const later = r.state === 'later'; const sent = r.state === 'sent'; const korr = !!dr.korr[p.id];
+    const card = h('div', { class: 'card' + (sent ? ' ready' : (ready ? ' ready' : (later ? ' later' : ''))) },
       h('div', { class: 'row between' }, h('h3', {}, p.kurzname),
-        h('span', { class: 'row tags' }, ready || r.state === 'skip' ? h('span', { class: 'tag' + (ready ? ' go' : '') }, '✓ bereit') : null, h('span', { class: 'tag' }, p.ahvAbzug ? 'mit AHV-Abzug' : 'ohne AHV-Abzug'))));
+        h('span', { class: 'row tags' },
+          sent ? h('span', { class: 'tag go' }, '✓ gesendet') : (later ? h('span', { class: 'tag later' }, 'später nachtragen') : (ready || r.state === 'skip' ? h('span', { class: 'tag' + (ready ? ' go' : '') }, '✓ bereit') : null)),
+          korr ? h('span', { class: 'tag korr' }, 'Korrektur') : null,
+          h('span', { class: 'tag' }, p.ahvAbzug ? 'mit AHV-Abzug' : 'ohne AHV-Abzug'))));
+    // Schon gesendet: nur Übersicht und «Korrektur»
+    if (sent) {
+      const x = r.rec;
+      card.append(h('p', { class: 'muted small' }, x ? (x.nichtGearbeitet ? 'Nicht gearbeitet · Lohnabrechnung 0.00' : `${C.fmtHc(x.hc || 0)} h · Brutto CHF ${C.fmtMoney(x.bruttoC)} · Netto CHF ${C.fmtMoney(x.nettoC)}`) : 'Für diesen Monat abgerechnet.'),
+        h('p', { class: 'ok small' }, `Gesendet am ${r.sentAt}` + (r.korrAt ? ` · Korrektur gesendet am ${r.korrAt}` : '')),
+        h('button', { class: 'btn sec', onclick: () => {
+          // Stand vor der Korrektur merken, damit «Korrektur abbrechen» ihn wiederherstellt.
+          dr.korr[p.id] = { days: JSON.parse(JSON.stringify(dr.days[p.id] || [])), skip: !!dr.skip[p.id], pTotal: dr.pTotal[p.id], excess: dr.excess[p.id] };
+          S.result = null; saveSoon(); render();
+        } }, 'Korrektur'),
+        h('p', { class: 'muted small' }, 'Mit «Korrektur» kannst du die Stunden ändern und die korrigierte Abrechnung senden. Die neuen Dokumente ersetzen die alten im Drive.'));
+      return card;
+    }
+    if (korr) {
+      card.append(h('div', { class: 'korrbox' }, h('p', {}, `Korrektur (gesendet am ${sentOf(dr.key)[p.id]}): Stunden ändern, dann «Dokumente erstellen» und «Ablegen, senden und sichern». ${p.vorname || p.kurzname} erhält die korrigierte Abrechnung (Betreff mit «(korrigiert)»).`),
+        h('button', { class: 'btn sec small', onclick: () => {
+          const k = dr.korr[p.id]; dr.days[p.id] = k.days || [];
+          if (k.skip) dr.skip[p.id] = true; else delete dr.skip[p.id];
+          if (k.pTotal != null) dr.pTotal[p.id] = k.pTotal; else delete dr.pTotal[p.id];
+          if (k.excess) dr.excess[p.id] = k.excess; else delete dr.excess[p.id];
+          delete dr.korr[p.id]; delete S.open[p.id]; S.result = null; saveSoon(); render();
+        } }, 'Korrektur abbrechen')));
+    }
     if (r.state === 'skip') {
       card.append(h('p', { class: 'muted' }, 'Hat in diesem Monat nicht gearbeitet – es wird eine Lohnabrechnung mit 0.00 erstellt (ohne Stundenübersicht).'),
         h('button', { class: 'btn sec', onclick: () => { delete dr.skip[p.id]; saveSoon(); render(); } }, 'Rückgängig'));
       return card;
     }
     const pend = dr.pending && dr.pending[p.id] != null && !p.pauschal;
-    const notWorked = (ask) => h('button', { class: 'btn sec', onclick: () => { if (ask && !confirm(ask)) return; dr.skip[p.id] = true; delete S.open[p.id]; saveSoon(); render(); } }, 'Hat nicht gearbeitet');
-    const startEntry = () => { if (!p.pauschal) { days.push({ date: mdays.find((x) => !used.has(x)) || mdays[0], hc: 0 }); touch(); } openEdit(); saveSoon(); render(); };
+    const notWorked = (ask) => h('button', { class: 'btn sec', onclick: () => { if (ask && !confirm(ask)) return; dr.skip[p.id] = true; delete dr.later[p.id]; delete S.open[p.id]; saveSoon(); render(); } }, 'Hat nicht gearbeitet');
+    const startEntry = () => { if (!p.pauschal) { days.push({ date: mdays.find((x) => !used.has(x)) || mdays[0], hc: 0 }); touch(); } delete dr.later[p.id]; openEdit(); saveSoon(); render(); };
+    if (later) {
+      card.append(h('p', {}, 'Die Stunden werden später nachgetragen. Für diese Person entstehen jetzt keine Dokumente und keine E-Mail; in der Jahresübersicht bleibt der Monat leer.'),
+        h('p', { class: 'small' }, pend ? 'Sobald die Person den Monat abgeschickt hat: «Stunden holen», dann «Dokumente erstellen» und «Ablegen, senden und sichern» – nur für sie.' : 'Später die Stunden eintragen, dann «Dokumente erstellen» und «Ablegen, senden und sichern» – nur für sie.'),
+        h('div', { class: 'row' }, h('button', { class: 'btn', onclick: startEntry }, pend ? 'Manuell eintragen' : 'Stunden eintragen'),
+          h('button', { class: 'btn sec', onclick: () => { delete dr.later[p.id]; saveSoon(); render(); } }, 'Rückgängig')));
+      return card;
+    }
     if (pend) {
       const ph = dr.pending[p.id];
       card.append(h('p', { class: 'warn' }, days.length
@@ -1042,6 +1125,8 @@ a{color:var(--acc)}
       if (!pend) card.append(h('p', { class: 'muted' }, p.pauschal ? 'Noch keine Stunden für diesen Monat.' : 'Keine Stunden in diesem Monat.'));
       card.append(h('div', { class: 'row' }, h('button', { class: 'btn', onclick: startEntry }, pend ? 'Manuell eintragen' : 'Stunden eintragen'),
         notWorked(pend ? `${p.kurzname} hat den Monat nicht abgeschickt. Wirklich «nicht gearbeitet» (Lohnabrechnung mit 0.00)?` : '')));
+      // Bei einer Korrektur gibt es kein «Später nachtragen» (die Person hat schon eine Abrechnung erhalten).
+      if (!korr) card.append(h('button', { class: 'btn sec', onclick: () => { dr.later[p.id] = true; delete dr.skip[p.id]; delete S.open[p.id]; saveSoon(); render(); } }, 'Später nachtragen'));
       return card;
     }
     if (days.length) {
@@ -1086,16 +1171,27 @@ a{color:var(--acc)}
   }
 
   function resultCard() {
-    const r = S.result; const files = r.files;
-    return h('div', { class: 'card done' }, h('h2', {}, 'Dokumente erstellt'),
-      h('p', { class: 'muted small' }, 'Die Dateien liegen nur in diesem Gerät. „Speichern/Teilen“ öffnet das iPhone-Menü (z. B. „In Dateien sichern“ oder Google Drive).'),
-      files.map((f) => h('div', { class: 'file' }, h('span', {}, f.name),
-        h('div', { class: 'row' }, h('button', { class: 'btn sec small', onclick: () => openBlob(f) }, 'Ansehen'), h('button', { class: 'btn small', onclick: () => shareFiles([f]) }, 'Speichern/Teilen')))),
-      h('button', { class: 'linkbtn', onclick: () => shareFiles(files) }, 'Alle Dateien speichern/teilen'),
-      googleBlock(r));
+    const r = S.result; const files = r.files; const mails = mailsFor(r);
+    const out = h('div', { class: 'card done' }, h('h2', {}, 'Dokumente erstellt'),
+      h('p', { class: 'muted small' }, 'Bitte prüfen: «Ansehen» öffnet das PDF, «E-Mail-Vorschau» zeigt die E-Mail. Die Dateien liegen erst in diesem Gerät. „Speichern/Teilen“ öffnet das iPhone-Menü.'));
+    const fileRow = (f) => h('div', { class: 'file' }, h('span', {}, f.name),
+      h('div', { class: 'row' }, h('button', { class: 'btn sec small', onclick: () => openBlob(f) }, 'Ansehen'), h('button', { class: 'btn small', onclick: () => shareFiles([f]) }, 'Speichern/Teilen')));
+    mails.forEach((e) => {
+      const p = S.data.persons.find((x) => x.id === e.pid);
+      out.append(h('div', { class: 'pblock' }, h('div', { class: 'row between' }, h('h3', {}, p.kurzname), e.korr ? h('span', { class: 'tag korr' }, 'Korrektur') : null),
+        files.filter((f) => f.pid === e.pid).map(fileRow),
+        h('details', { class: 'mailprev' }, h('summary', {}, e.done ? `E-Mail-Vorschau · gesendet` : 'E-Mail-Vorschau'),
+          h('div', { class: 'small' }, h('b', {}, 'An: '), e.to || '–'), h('div', { class: 'small' }, h('b', {}, 'CC: '), e.cc || '–'),
+          h('div', { class: 'small' }, h('b', {}, 'Betreff: '), (isTest() ? '[TEST] ' : '') + e.subject),
+          h('pre', {}, e.body),
+          h('div', { class: 'small muted' }, 'Anhänge: ' + files.filter((f) => f.pid === e.pid).map((f) => f.name).join(', ')))));
+    });
+    files.filter((f) => f.pid === null).forEach((f) => out.append(h('div', { class: 'pblock' }, h('h3', {}, 'Jahresübersicht'), fileRow(f))));
+    out.append(h('button', { class: 'linkbtn', onclick: () => shareFiles(files) }, 'Alle Dateien speichern/teilen'), googleBlock(r, mails));
+    return out;
   }
 
-  /* ---------- Google: Ablage im Drive und Gmail-Entwürfe (über das eigene Google-Script) ---------- */
+  /* ---------- Google: Ablage im Drive, Gmail-Entwürfe und Senden (über das eigene Google-Script) ---------- */
   const isTest = () => S.data.persons.length > 0 && S.data.persons.every((p) => p.id.startsWith('demo'));
   async function scriptPost(body) {
     const key = (S.data.settings.abrufKey || '').trim();
@@ -1138,41 +1234,30 @@ a{color:var(--acc)}
 
   /* Gesendete Lohnabrechnungen dauerhaft merken (verschlüsselt im Gerät und in der Sicherung), damit nach einem Neustart nicht nochmals gesendet wird. */
   const sentOf = (key) => ((S.data.gesendet || {})[key] || {});
+  const korrOf = (key) => ((S.data.korrigiert || {})[key] || {});
   const nowTxt = () => { const t = new Date(); const z = (n) => String(n).padStart(2, '0'); return `${z(t.getDate())}.${z(t.getMonth() + 1)}.${t.getFullYear()} ${z(t.getHours())}:${z(t.getMinutes())}`; };
   function markSent(key, pid, test) { const d = S.data; if (!d.gesendet) d.gesendet = {}; if (!d.gesendet[key]) d.gesendet[key] = {}; d.gesendet[key][pid] = nowTxt() + (test ? ' (Test)' : ''); saveNow(); }
-  function sentNames(key) { const g = sentOf(key); return S.data.persons.filter((p) => g[p.id]).map((p) => `${p.kurzname} (${g[p.id]})`); }
+  // Korrektur gesendet: «gesendet am» bleibt, dazu «Korrektur gesendet am»; die Person ist danach wieder gesperrt.
+  function markKorr(key, pid, test) { const d = S.data; if (!d.korrigiert) d.korrigiert = {}; if (!d.korrigiert[key]) d.korrigiert[key] = {}; d.korrigiert[key][pid] = nowTxt() + (test ? ' (Test)' : ''); const dr = ensureDraft(); if (dr.key === key) delete dr.korr[pid]; saveNow(); }
+  function sentNames(key) { const g = sentOf(key); const k = korrOf(key); return S.data.persons.filter((p) => g[p.id]).map((p) => `${p.kurzname} (${g[p.id]}${k[p.id] ? ', Korrektur ' + k[p.id] : ''})`); }
 
-  function mailDraft(p, key, ohneStunden) {
-    const { y, m } = keyYM(key); const d = S.data;
-    const satz = ohneStunden ? `Hier ist deine Lohnabrechnung vom ${C.MONATE[m - 1]}.` : `Hier ist deine Lohnabrechnung vom ${C.MONATE[m - 1]} mit der Stundenübersicht.`;
+  function mailDraft(p, key, ohneStunden, korr) {
+    const { y, m } = keyYM(key); const d = S.data; const mon = C.MONATE[m - 1];
+    const lohn = korr ? 'korrigierte Lohnabrechnung' : 'Lohnabrechnung';
+    const satz = ohneStunden ? `Hier ist deine ${lohn} vom ${mon}.` : `Hier ist deine ${lohn} vom ${mon} mit der Stundenübersicht.`;
     return {
-      pid: p.id, to: p.email || '', cc: d.employer.email || '',
-      subject: `Lohnabrechnung ${C.monthLabel(y, m)} / ${p.kurzname}`,
+      pid: p.id, to: p.email || '', cc: d.employer.email || '', korr: !!korr,
+      subject: `Lohnabrechnung ${C.monthLabel(y, m)} / ${p.kurzname}` + (korr ? ' (korrigiert)' : ''),
       body: `${p.anrede === 'Herr' ? 'Lieber' : 'Liebe'} ${p.vorname}\n\n${satz}\n\nVielen Dank für deine Unterstützung! ❤️\n\nLiebe Grüsse\nRoger`,
     };
   }
-  async function entwuerfeErstellen() {
-    const r = S.result; const list = S.entw.list;
-    S.entw.running = true; render();
-    for (const e of list) {
-      if (e.sendState === 'ok') continue;
-      e.state = 'run'; render();
-      try {
-        const fl = []; for (const f of r.files.filter((x) => x.pid === e.pid)) fl.push({ name: f.name, b64: await blobB64(f.blob) });
-        const x = await scriptPost({ action: 'entwurf', to: e.to, cc: e.cc, subject: e.subject, body: e.body, files: fl });
-        e.state = 'ok'; e.msg = x.ersetzt ? 'Entwurf ersetzt' : 'Entwurf erstellt'; e.draftId = x.id; e.sendState = null; e.sendMsg = '';
-      } catch (err) { e.state = 'err'; e.msg = err.message; }
-      render();
-    }
-    S.entw.running = false; S.entw.done = list.every((e) => e.state === 'ok'); S.entw.sent = list.every((e) => e.sendState === 'ok'); render();
-  }
-
-  function entwListe() {
-    const r = S.result; const d = S.data;
-    const g = sentOf(r.key);
+  /* E-Mails zu den erstellten Dokumenten. done = schon gesendet (wird nicht nochmals gesendet). */
+  function mailsFor(r) {
+    const d = S.data; const dr = ensureDraft(); const g = sentOf(r.key);
     return d.persons.filter((p) => r.files.some((f) => f.pid === p.id)).map((p) => {
-      const e = mailDraft(p, r.key, !r.files.some((f) => f.pid === p.id && /Stundenübersicht/.test(f.name)));
-      if (g[p.id]) Object.assign(e, { state: 'ok', msg: 'kein neuer Entwurf (schon gesendet)', sendState: 'ok', sendMsg: `bereits gesendet am ${g[p.id]} – Korrektur bitte selbst in Gmail senden` });
+      const korr = !!(g[p.id] && dr.key === r.key && dr.korr[p.id]);
+      const e = mailDraft(p, r.key, !r.files.some((f) => f.pid === p.id && /Stundenübersicht/.test(f.name)), korr || !!(S.run && S.run.korr && S.run.korr[p.id]));
+      e.done = !!(g[p.id] && !korr);
       return e;
     });
   }
@@ -1182,113 +1267,90 @@ a{color:var(--acc)}
     if (!d.employer.email) probs.push('Arbeitgeber: keine E-Mail-Adresse für CC in den Einstellungen.');
     return probs;
   }
-  /* Ablage und Entwürfe in einem Zug. Entwürfe entstehen nur, wenn die Ablage vollständig geklappt hat. Gesendet wird hier nie. */
-  async function ablegenUndEntwuerfe() {
-    // Immer aus den aktuellen Einstellungen neu zusammenstellen (Adressen könnten geändert worden sein).
-    S.entw = { list: entwListe() };
-    if (entwProbs(S.entw.list).length) { S.kombi = { err: 'Nichts ausgeführt: Bitte zuerst die fehlenden Angaben unten bei „2. Gmail-Entwürfe“ ergänzen.' }; render(); return; }
-    S.kombi = { running: true }; render();
-    await driveAblegen();
-    if (!S.ablage.done) { S.kombi = { err: 'Die Ablage ist nicht vollständig. Es wurden keine Entwürfe erstellt. Details unten bei „1. Im Drive ablegen“.' }; render(); return; }
-    await entwuerfeErstellen();
-    if (S.entw.list.every((e) => e.sendState === 'ok')) { S.kombi = { ok: 'Im Drive abgelegt. Alle Lohnabrechnungen dieses Monats wurden schon gesendet – es wurden keine neuen Entwürfe erstellt. Eine Korrektur bitte selbst in Gmail senden.' }; render(); return; }
-    S.kombi = S.entw.done ? { ok: 'Abgelegt und Entwürfe erstellt. Bitte die Entwürfe unten prüfen, dann bei „3. Senden“ senden.' } : { err: 'Im Drive abgelegt, aber nicht alle Entwürfe erstellt. Details unten bei „2. Gmail-Entwürfe“.' };
-    render();
-  }
 
-  /* Senden der geprüften Entwürfe: nur nach Rückfrage, jeder Entwurf höchstens einmal. */
-  async function entwuerfeSenden() {
-    const list = S.entw.list.filter((e) => e.state === 'ok' && e.draftId && e.sendState !== 'ok');
-    if (!list.length) return;
-    const zeilen = list.map((e) => `• ${e.to}${e.cc ? ' (CC ' + e.cc + ')' : ''}`).join('\n');
-    if (!confirm(`${list.length} E-Mail${list.length === 1 ? '' : 's'} jetzt wirklich senden?\n\n${zeilen}\n\nDas kann nicht rückgängig gemacht werden. Danach wird die Sicherung im Drive abgelegt.`)) return;
-    S.entw.sending = true; render();
-    for (const e of list) {
+  /* Ein Schritt: im Drive ablegen → Gmail-Entwürfe → senden → Sicherung.
+     Gesendet wird nur, wenn Ablage und alle Entwürfe geklappt haben. Wiederholbar: schon Gesendetes wird nie nochmals gesendet. */
+  async function ablegenSendenSichern() {
+    const r = S.result; const mails = mailsFor(r).filter((e) => !e.done);
+    if (!mails.length || entwProbs(mails).length) return;
+    const zeilen = mails.map((e) => `• ${e.to}${e.cc ? ' (CC ' + e.cc + ')' : ''}${e.korr ? ' – Korrektur' : ''}`).join('\n');
+    if (!confirm(`Im Drive ablegen und ${mails.length} E-Mail${mails.length === 1 ? '' : 's'} jetzt wirklich senden?\n\n${zeilen}\n\nDas Senden kann nicht rückgängig gemacht werden. Danach wird die Sicherung im Drive abgelegt.`)) return;
+    S.run = { running: true, mails, korr: Object.fromEntries(mails.filter((e) => e.korr).map((e) => [e.pid, true])) }; render();
+    const stop = (msg) => { S.run.running = false; S.run.err = msg; render(); };
+    // 1) Drive
+    await driveAblegen();
+    if (!S.ablage.done) return stop('Die Ablage im Drive ist nicht vollständig. Es wurde nichts gesendet. Details unten.');
+    // 2) Entwürfe (ersetzen gleichnamige; das Script prüft die erlaubten Empfänger)
+    for (const e of mails) {
+      e.state = 'run'; e.msg = ''; render();
+      try {
+        const fl = []; for (const f of r.files.filter((x) => x.pid === e.pid)) fl.push({ name: f.name, b64: await blobB64(f.blob) });
+        const x = await scriptPost({ action: 'entwurf', to: e.to, cc: e.cc, subject: e.subject, body: e.body, files: fl });
+        e.state = 'ok'; e.msg = x.ersetzt ? 'Entwurf ersetzt' : 'Entwurf erstellt'; e.draftId = x.id;
+      } catch (err) { e.state = 'err'; e.msg = err.message; }
+      render();
+    }
+    if (mails.some((e) => e.state !== 'ok')) return stop('Nicht alle Gmail-Entwürfe konnten erstellt werden. Es wurde nichts gesendet. Details unten.');
+    // 3) Senden
+    for (const e of mails) {
       e.sendState = 'run'; render();
       try {
         const x = await scriptPost({ action: 'senden', draftId: e.draftId });
-        e.sendState = 'ok'; e.sendMsg = x.simuliert ? 'Test: Senden geprüft, nicht wirklich gesendet (@example.com)' : 'gesendet';
-        markSent(S.result.key, e.pid, !!x.simuliert);
+        e.sendState = 'ok'; e.sendMsg = x.simuliert ? 'Test: Senden geprüft, nicht wirklich gesendet (@example.com)' : (e.korr ? 'Korrektur gesendet' : 'gesendet');
+        if (e.korr) markKorr(r.key, e.pid, !!x.simuliert); else markSent(r.key, e.pid, !!x.simuliert);
       } catch (err) { e.sendState = 'err'; e.sendMsg = err.message; }
       render();
     }
-    S.entw.sending = false; S.entw.sent = S.entw.list.every((e) => e.sendState === 'ok'); render();
-    if (list.some((e) => e.sendState === 'ok')) await sicherungAblegen();
+    // 4) Sicherung
+    if (mails.some((e) => e.sendState === 'ok')) await sicherungAblegen();
+    S.run.running = false;
+    if (mails.some((e) => e.sendState !== 'ok')) S.run.err = 'Nicht alle E-Mails wurden gesendet. Nochmals versuchen: Schon Gesendetes wird nicht nochmals gesendet.';
+    else S.run.ok = true;
+    render();
   }
 
   // Nach dem Senden: verschlüsselte Sicherung (mit «gesendet am …») im Drive-Hauptordner ablegen; ältere kommen in den Papierkorb.
   async function sicherungAblegen() {
-    S.entw.sich = { state: 'run', msg: '' }; render();
+    S.run.sich = { state: 'run', msg: '' }; render();
     try {
       await save();
       const t = new Date(); const tag = `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`;
       const x = await scriptPost({ action: 'sicherung', name: `Sicherung Abrechnung ${tag}.json`, inhalt: localStorage.getItem(VAULT_KEY) });
-      S.entw.sich = { state: 'ok', msg: `${x.name} im Ordner «${x.ordner}»` + (x.ersetzt ? ` · ältere Sicherung${x.ersetzt === 1 ? '' : 'en'} im Papierkorb` : '') };
-    } catch (err) { S.entw.sich = { state: 'err', msg: err.message }; }
+      S.run.sich = { state: 'ok', msg: `${x.name} im Ordner «${x.ordner}»` + (x.ersetzt ? ` · ältere Sicherung${x.ersetzt === 1 ? '' : 'en'} im Papierkorb` : '') };
+    } catch (err) { S.run.sich = { state: 'err', msg: err.message }; }
     render();
   }
 
   const MARK = { ok: '✓', err: '✗', run: '…', skip: '–' };
   const stepLine = (label, st) => h('div', { class: 'step ' + (st.state || '') }, h('span', { class: 'mk' }, MARK[st.state] || '○'), h('span', {}, label, st.msg ? h('div', { class: 'small ' + (st.state === 'err' ? 'err' : 'muted') }, st.msg) : null));
 
-  function googleBlock(r) {
-    const d = S.data; const out = h('div', { class: 'gblock' }, h('h2', {}, 'Google Drive und Gmail'));
+  function googleBlock(r, mails) {
+    const out = h('div', { class: 'gblock' }, h('h2', {}, 'Ablegen, senden und sichern'));
     if (isTest()) out.append(h('p', { class: 'tag' }, 'Testmodus (erfundene Daten): nur Ordner „_TEST Beispieldaten“, nur Adressen @example.com'));
-    // Ablegen und Entwürfe in einem Zug
-    const busy = !!((S.ablage && S.ablage.running) || (S.entw && (S.entw.running || S.entw.sending)) || (S.kombi && S.kombi.running));
-    const gesendet = !!(S.entw && S.entw.list.some((e) => e.sendState === 'ok'));
-    const beidesFertig = !!(S.ablage && S.ablage.done && S.entw && S.entw.done);
-    if (S.kombi && S.kombi.ok) out.append(h('p', { class: 'ok' }, S.kombi.ok));
-    if (S.kombi && S.kombi.err) out.append(h('div', { class: 'blockers' }, h('p', {}, S.kombi.err)));
-    if (!gesendet && !beidesFertig) {
-      out.append(h('p', { class: 'muted small' }, 'Legt alles im Drive ab und erstellt danach die Gmail-Entwürfe. Gesendet wird noch nicht.'),
-        h('button', { class: 'btn', disabled: busy, onclick: ablegenUndEntwuerfe }, S.kombi && S.kombi.running ? 'Lege ab und erstelle Entwürfe …' : 'Ablegen und Entwürfe erstellen'));
-      out.append(h('p', { class: 'muted small mt' }, 'Oder einzeln:'));
-    }
-    // Drive
-    out.append(h('h3', {}, '1. Im Drive ablegen'));
-    if (!S.ablage) out.append(h('p', { class: 'muted small' }, 'Legt die PDFs in den Ordnern der Personen ab, aktualisiert die Google Tabelle „Jahresübersicht“ und ersetzt das PDF der Jahresübersicht. Alte Versionen kommen in den Papierkorb.'));
-    else S.ablage.steps.forEach((s) => out.append(stepLine(s.label, s)));
-    if (S.ablage && S.ablage.done) out.append(h('p', { class: 'ok' }, 'Alles im Drive abgelegt.'));
+    const offen = mails.filter((e) => !e.done); const run = S.run;
+    const busy = !!(run && (run.running || (run.sich && run.sich.state === 'run')));
+    const probs = entwProbs(offen);
+    if (run && run.ok) out.append(h('p', { class: 'ok' }, isTest() ? 'Test abgeschlossen: abgelegt, Senden geprüft, gesichert.' : 'Erledigt: im Drive abgelegt, gesendet und gesichert.'));
+    if (run && run.err) out.append(h('div', { class: 'blockers' }, h('p', {}, run.err)));
     if (S.ablage && !S.ablage.running && S.ablage.steps[0].state === 'err' && /Jahresdaten übernehmen/.test(S.ablage.steps[0].msg || '')) {
       out.append(h('button', { class: 'btn sec', onclick: () => { S.tab = 'year'; render(); window.scrollTo(0, 0); } }, 'Zu „Jahr“: Jahresdaten übernehmen'));
     }
-    out.append(h('button', { class: 'btn sec', disabled: busy, onclick: driveAblegen },
-      S.ablage && S.ablage.running ? 'Lege ab …' : (S.ablage ? 'Nochmals im Drive ablegen' : 'Im Drive ablegen')));
-    // Gmail
-    out.append(h('h3', { class: 'mt' }, '2. Gmail-Entwürfe'));
-    if (!S.entw) {
-      out.append(h('p', { class: 'muted small' }, 'Pro Person ein Entwurf mit den PDFs, CC an den Arbeitgeber. Gesendet wird erst in Schritt 3, nach deiner Kontrolle und einer Rückfrage.'),
-        h('button', { class: 'btn sec', disabled: busy, onclick: () => { S.entw = { list: entwListe() }; render(); } }, 'Entwürfe ansehen'));
-      return out;
-    }
-    const probs = entwProbs(S.entw.list);
-    S.entw.list.forEach((e) => {
-      out.append(h('div', { class: 'mail' },
-        h('div', { class: 'small' }, h('b', {}, 'An: '), e.to || '–'), h('div', { class: 'small' }, h('b', {}, 'CC: '), e.cc || '–'),
-        h('div', { class: 'small' }, h('b', {}, 'Betreff: '), (isTest() ? '[TEST] ' : '') + e.subject),
-        h('pre', {}, e.body),
-        h('div', { class: 'small muted' }, 'Anhänge: ' + r.files.filter((f) => f.pid === e.pid).map((f) => f.name).join(', ')),
-        e.state ? stepLine('Gmail', e) : null,
-        e.sendState ? stepLine('Senden', { state: e.sendState, msg: e.sendMsg }) : null));
-    });
-    if (probs.length) out.append(h('div', { class: 'blockers' }, probs.map((x) => h('p', {}, x))));
-    const anySent = S.entw.list.some((e) => e.sendState === 'ok');
-    if (S.entw.done && !anySent) out.append(h('p', { class: 'ok' }, 'Die Entwürfe liegen in Gmail. Du kannst sie dort ansehen oder hier senden.'));
-    if (!anySent) out.append(h('button', { class: 'btn sec', disabled: !!(busy || probs.length), onclick: entwuerfeErstellen },
-      S.entw.running ? 'Erstelle Entwürfe …' : (S.entw.done ? 'Entwürfe nochmals erstellen (ersetzt sie)' : 'Entwürfe in Gmail erstellen')));
-    // 3. Senden
-    if (S.entw.done) {
-      out.append(h('h3', { class: 'mt' }, '3. Senden'));
-      const offen = S.entw.list.filter((e) => e.sendState !== 'ok').length;
-      if (S.entw.sent) out.append(h('p', { class: 'ok' }, isTest() ? 'Test abgeschlossen: Senden geprüft.' : 'Alle Lohnabrechnungen sind gesendet.'));
-      else {
-        out.append(h('p', { class: 'muted small' }, 'Sendet die geprüften Entwürfe oben und legt danach die Sicherung im Drive ab. Vorher kommt eine Rückfrage mit allen Empfängern. Gesendet wird nur an Adressen, die im Script erlaubt sind.'));
-        out.append(h('button', { class: 'btn', disabled: !!(S.entw.sending || (S.entw.sich && S.entw.sich.state === 'run')), onclick: entwuerfeSenden }, S.entw.sending ? 'Sende …' : `Jetzt senden und sichern (${offen})`));
+    if (offen.length) {
+      if (!run) out.append(h('p', { class: 'muted small' }, 'Legt alles im Drive ab (PDFs, Google Tabelle und PDF der Jahresübersicht; alte Versionen in den Papierkorb), sendet die E-Mails (CC an den Arbeitgeber) und legt danach die Sicherung im Drive ab. Vorher kommt eine Rückfrage mit allen Empfängern. Klappt ein Schritt nicht, wird nichts gesendet.'));
+      if (probs.length) out.append(h('div', { class: 'blockers' }, probs.map((x) => h('p', {}, x))));
+      out.append(h('button', { class: 'btn', disabled: !!(busy || probs.length), onclick: ablegenSendenSichern },
+        run && run.running ? 'Läuft …' : `${run && run.err ? 'Nochmals versuchen' : 'Ablegen, senden und sichern'} (${offen.length})`));
+    } else if (!run) out.append(h('p', { class: 'ok' }, 'Diese Abrechnungen sind schon gesendet.'));
+    // Fortschritt
+    if (run) {
+      if (S.ablage) { out.append(h('h3', { class: 'mt' }, 'Drive')); S.ablage.steps.forEach((s) => out.append(stepLine(s.label, s))); }
+      if (run.mails.some((e) => e.state)) {
+        out.append(h('h3', { class: 'mt' }, 'E-Mails'));
+        run.mails.forEach((e) => { const p = S.data.persons.find((x) => x.id === e.pid); out.append(stepLine(`${p.kurzname}${e.korr ? ' (Korrektur)' : ''}: Entwurf`, e)); if (e.sendState) out.append(stepLine(`${p.kurzname}: Senden an ${e.to}`, { state: e.sendState, msg: e.sendMsg })); });
       }
-      if (S.entw.sich) {
-        out.append(stepLine('Sicherung im Drive', S.entw.sich));
-        if (S.entw.sich.state === 'err') out.append(h('button', { class: 'btn sec', onclick: sicherungAblegen }, 'Sicherung nochmals ablegen'));
+      if (run.sich) {
+        out.append(stepLine('Sicherung im Drive', run.sich));
+        if (run.sich.state === 'err') out.append(h('button', { class: 'btn sec', onclick: sicherungAblegen }, 'Sicherung nochmals ablegen'));
       }
     }
     return out;
